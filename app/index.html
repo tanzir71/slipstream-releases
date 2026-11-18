@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Slipstream Web — record, cut and caption in your browser</title>
+<meta name="description" content="Slipstream Web is a local-first screen recorder and transcript editor that runs entirely in your browser. On-device Whisper transcription, word-level cutting, smart zoom, captions and 9:16 export. Nothing is uploaded." />
+<meta name="theme-color" content="#0b0b0d" />
+<link rel="icon" href="../favicon.svg" type="image/svg+xml" />
+<link rel="preload" href="../assets/fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="stylesheet" href="app.css" />
+<link rel="stylesheet" href="p2p.css" />
+<link rel="modulepreload" href="vendor/mediabunny.min.mjs" />
+</head>
+<body>
+<noscript><p style="padding:24px;font-family:system-ui">Slipstream Web needs JavaScript. Everything runs locally in your browser.</p></noscript>
+<div id="app" aria-live="polite">
+  <div class="loading"><div class="spinner"></div><p>Loading Slipstream…</p></div>
+</div>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

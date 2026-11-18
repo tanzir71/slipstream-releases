@@ -1,0 +1,2 @@
+48f7ba61a1843a65bf034e8fcc653ec045194e07d56bd1efedca32effd5c8c38  slipstream-windows-x64-setup.exe
+78ebba4e135489640d97a69024f956e1f488ada37b6ead4aeb27c2ea25d2393f  slipstream-windows-x64.msi

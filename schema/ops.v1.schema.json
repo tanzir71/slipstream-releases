@@ -1,0 +1,692 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://slipstream.tanziro.com/schema/ops.v1.json",
+  "title": "Slipstream edit ops",
+  "description": "A list of edit operations applied in order to a Slipstream project. Times are seconds on the source timeline; words are addressed by transcript word id.",
+  "type": "object",
+  "properties": {
+    "ops": {
+      "type": "array",
+      "description": "Operations, applied in order. Each one can be previewed, accepted or rejected.",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Cut a run of transcript words (inclusive). Use word ids from the transcript. Cut words stay visible as struck-through text and can be restored.",
+            "properties": {
+              "op": {
+                "const": "cut_words"
+              },
+              "args": {
+                "type": "object",
+                "properties": {
+                  "from_word_id": {
+                    "type": "string",
+                    "description": "Id of the first word to cut, as shown in the transcript (e.g. \"w_12\").",
+                    "minLength": 1
+                  },
+                  "to_word_id": {
+                    "type": "string",
+                    "description": "Id of the last word to cut, inclusive. Same as from_word_id for a single word.",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "from_word_id",
+                  "to_word_id"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "op",
+              "args"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Bring back previously cut transcript words (inclusive range of word ids).",
+            "properties": {
+              "op": {
+                "const": "restore_words"
+              },
+              "args": {
+                "type": "object",
+                "properties": {
+                  "from_word_id": {
+                    "type": "string",
+                    "description": "Id of the first word to restore, as shown in the transcript (e.g. \"w_12\").",
+                    "minLength": 1
+                  },
+                  "to_word_id": {
+                    "type": "string",
+                    "description": "Id of the last word to restore, inclusive. Same as from_word_id for a single word.",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "from_word_id",
+                  "to_word_id"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "op",
+              "args"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Cut a span of the timeline by time. Prefer cut_words for speech; use this for silence, setup or screen-only stretches.",
+            "properties": {
+              "op": {
+                "const": "cut_range"
+              },
+              "args": {
+                "type": "object",
+                "properties": {
+                  "start": {
+                    "type": "number",
+                    "description": "Start of the cut, in seconds on the source (original recording) timeline.",
+                    "minimum": 0
+                  },
+                  "end": {
+                    "type": "number",
+                    "description": "End of the cut; after start, in seconds on the source (original recording) timeline.",
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "start",
+                  "end"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "op",
+              "args"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Undo every cut (words, pauses, manual cuts, clip range) that removes any part of this span.",
+            "properties": {
+              "op": {
+                "const": "restore_range"
+              },
+              "args": {
+                "type": "object",
+                "properties": {
+                  "start": {
+                    "type": "number",
+                    "description": "Start of the span to restore, in seconds on the source (original recording) timeline.",
+                    "minimum": 0
+                  },
+                  "end": {
+                    "type": "number",
+                    "description": "End of the span; after start, in seconds on the source (original recording) timeline.",
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "start",
+                  "end"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "op",
+              "args"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Cut filler words. Always cuts hard fillers (um, uh, er, ah, hmm). With include_soft, also cuts soft fillers (like, you know, I mean, basically, actually, so, right, okay), which can carry meaning.",
+            "properties": {
+              "op": {
+                "const": "remove_fillers"
+              },
+              "args": {
+                "type": "object",
+                "properties": {
+                  "include_soft": {
+                    "type": "boolean",
+                    "description": "Also cut soft fillers. Default false.",
+                    "default": false
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "op"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Shorten every pause between words longer than min_gap seconds so that keep seconds remain. Replaces earlier pause cuts, so it can be re-run with new values.",
+            "properties": {
+              "op": {
+                "const": "shorten_pauses"
+              },
+              "args": {
+                "type": "object",
+                "properties": {
+                  "min_gap": {
+                    "type": "number",
+                    "description": "Only pauses at least this long are shortened. Default 0.75.",
+                    "minimum": 0.1,
+                    "maximum": 10,
+                    "default": 0.75
+                  },
+                  "keep": {
+                    "type": "number",
+                    "description": "Seconds of pause to leave. Default 0.25.",
+                    "minimum": 0,
+                    "maximum": 5,
+                    "default": 0.25
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "op"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Find sentences the speaker restarted or repeated within 20 seconds and cut the earlier take. Each retake can be restored.",
+            "properties": {
+              "op": {
+                "const": "remove_retakes"
+              },
+              "args": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "op"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Add a smooth zoom on part of the screen recording. Defaults: scale 1.8, centred.",
+            "properties": {
+              "op": {
+                "const": "add_zoom"
+              },
+              "args": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Optional id for the new zoom; generated when omitted.",
+                    "minLength": 1
+                  },
+                  "start": {
+                    "type": "number",
+                    "description": "Zoom start, in seconds on the source (original recording) timeline.",
+                    "minimum": 0
+                  },
+                  "end": {
+                    "type": "number",
+                    "description": "Zoom end; after start, in seconds on the source (original recording) timeline.",
+                    "minimum": 0
+                  },
+                  "scale": {
+                    "type": "number",
+                    "description": "Magnification: 1.3 subtle, 1.8 default, 2.5 tight.",
+                    "minimum": 1,
+                    "maximum": 4,
+                    "default": 1.8
+                  },
+                  "x": {
+                    "type": "number",
+                    "description": "Focus point across the frame: 0 left, 0.5 centre, 1 right.",
+                    "minimum": 0,
+                    "maximum": 1,
+                    "default": 0.5
+                  },
+                  "y": {
+                    "type": "number",
+                    "description": "Focus point down the frame: 0 top, 0.5 centre, 1 bottom.",
+                    "minimum": 0,
+                    "maximum": 1,
+                    "default": 0.5
+                  }
+                },
+                "required": [
+                  "start",
+                  "end"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "op",
+              "args"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Change an existing zoom. Only the given fields change.",
+            "properties": {
+              "op": {
+                "const": "update_zoom"
+              },
+              "args": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Id of the zoom to change.",
+                    "minLength": 1
+                  },
+                  "start": {
+                    "type": "number",
+                    "description": "Zoom start, in seconds on the source (original recording) timeline.",
+                    "minimum": 0
+                  },
+                  "end": {
+                    "type": "number",
+                    "description": "Zoom end; after start, in seconds on the source (original recording) timeline.",
+                    "minimum": 0
+                  },
+                  "scale": {
+                    "type": "number",
+                    "description": "Magnification: 1.3 subtle, 1.8 default, 2.5 tight.",
+                    "minimum": 1,
+                    "maximum": 4
+                  },
+                  "x": {
+                    "type": "number",
+                    "description": "Focus point across the frame: 0 left, 0.5 centre, 1 right.",
+                    "minimum": 0,
+                    "maximum": 1
+                  },
+                  "y": {
+                    "type": "number",
+                    "description": "Focus point down the frame: 0 top, 0.5 centre, 1 bottom.",
+                    "minimum": 0,
+                    "maximum": 1
+                  }
+                },
+                "required": [
+                  "id"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "op",
+              "args"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Remove one zoom by id, or every zoom overlapping start–end (use 0 to the video length to remove all).",
+            "properties": {
+              "op": {
+                "const": "remove_zoom"
+              },
+              "args": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Id of the zoom to remove.",
+                    "minLength": 1
+                  },
+                  "start": {
+                    "type": "number",
+                    "description": "Start of the span, in seconds on the source (original recording) timeline.",
+                    "minimum": 0
+                  },
+                  "end": {
+                    "type": "number",
+                    "description": "End of the span, in seconds on the source (original recording) timeline.",
+                    "minimum": 0
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "op"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Arrange camera and screen. pip = camera bubble in a corner, split = side by side (stacked in vertical formats), screen = screen only, camera = camera only.",
+            "properties": {
+              "op": {
+                "const": "set_layout"
+              },
+              "args": {
+                "type": "object",
+                "properties": {
+                  "mode": {
+                    "enum": [
+                      "pip",
+                      "split",
+                      "screen",
+                      "camera"
+                    ],
+                    "description": "Layout mode."
+                  },
+                  "corner": {
+                    "enum": [
+                      "tl",
+                      "tr",
+                      "bl",
+                      "br"
+                    ],
+                    "description": "Bubble corner for pip: tl top-left, tr top-right, bl bottom-left, br bottom-right."
+                  },
+                  "size": {
+                    "type": "number",
+                    "description": "Bubble size as a fraction of the frame (pip). Default 0.22.",
+                    "minimum": 0.08,
+                    "maximum": 0.5
+                  },
+                  "shape": {
+                    "enum": [
+                      "circle",
+                      "rounded",
+                      "square",
+                      "wide"
+                    ],
+                    "description": "Bubble shape (pip)."
+                  },
+                  "split": {
+                    "type": "number",
+                    "description": "Share of the frame given to the camera (split). Default 0.4.",
+                    "minimum": 0.25,
+                    "maximum": 0.7
+                  }
+                },
+                "required": [
+                  "mode"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "op",
+              "args"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Set the output frame: 16:9 landscape (YouTube), 9:16 vertical (TikTok, Reels, Shorts), 1:1 square, 4:5 portrait feed post.",
+            "properties": {
+              "op": {
+                "const": "set_aspect"
+              },
+              "args": {
+                "type": "object",
+                "properties": {
+                  "aspect": {
+                    "enum": [
+                      "16:9",
+                      "9:16",
+                      "1:1",
+                      "4:5"
+                    ],
+                    "description": "Output aspect ratio."
+                  }
+                },
+                "required": [
+                  "aspect"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "op",
+              "args"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Turn burned-in captions on or off and style them. Only the given fields change.",
+            "properties": {
+              "op": {
+                "const": "set_captions"
+              },
+              "args": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean",
+                    "description": "Show captions."
+                  },
+                  "preset": {
+                    "enum": [
+                      "studio",
+                      "cinema",
+                      "editorial",
+                      "bold"
+                    ],
+                    "description": "Look: studio = clean boxed sans (default), cinema = subtle film subtitles, editorial = italic serif, bold = big caps, 2–3 words at a time (short-form)."
+                  },
+                  "position": {
+                    "enum": [
+                      "top",
+                      "middle",
+                      "bottom"
+                    ],
+                    "description": "Vertical placement."
+                  },
+                  "size": {
+                    "type": "number",
+                    "description": "Size relative to the look's default (1).",
+                    "minimum": 0.7,
+                    "maximum": 1.5
+                  },
+                  "color": {
+                    "type": "string",
+                    "description": "Highlight colour for the active word, as #rrggbb.",
+                    "pattern": "^#[0-9a-fA-F]{6}$"
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "op"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Export only one part of the recording (start–end in source seconds), e.g. for a short clip. Omit start and end (or pass null) to export the whole recording again.",
+            "properties": {
+              "op": {
+                "const": "set_clip_range"
+              },
+              "args": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "start": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "minimum": 0,
+                        "description": "Clip start, source seconds; null to clear."
+                      },
+                      "end": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "minimum": 0,
+                        "description": "Clip end, source seconds; null to clear."
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "op"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Suggest short-form clips scored for hook, pace and a clean ending. Read-only: returns candidates { start, end, score, title, reasons }; apply one with set_clip_range.",
+            "properties": {
+              "op": {
+                "const": "find_clips"
+              },
+              "args": {
+                "type": "object",
+                "properties": {
+                  "min_dur": {
+                    "type": "number",
+                    "description": "Shortest clip, seconds. Default 12.",
+                    "minimum": 1,
+                    "maximum": 600,
+                    "default": 12
+                  },
+                  "max_dur": {
+                    "type": "number",
+                    "description": "Longest clip, seconds. Default 60.",
+                    "minimum": 1,
+                    "maximum": 900,
+                    "default": 60
+                  },
+                  "count": {
+                    "type": "integer",
+                    "description": "How many candidates. Default 5.",
+                    "minimum": 1,
+                    "maximum": 20,
+                    "default": 5
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "op"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Render the edited video to a file on this device. Does not change the edit. Defaults follow the project (aspect at 1080p, 30 fps, MP4, captions if on).",
+            "properties": {
+              "op": {
+                "const": "render"
+              },
+              "args": {
+                "type": "object",
+                "properties": {
+                  "width": {
+                    "type": "integer",
+                    "description": "Output width in pixels (even).",
+                    "minimum": 16,
+                    "maximum": 7680
+                  },
+                  "height": {
+                    "type": "integer",
+                    "description": "Output height in pixels (even).",
+                    "minimum": 16,
+                    "maximum": 7680
+                  },
+                  "fps": {
+                    "type": "number",
+                    "description": "Frames per second.",
+                    "minimum": 1,
+                    "maximum": 120
+                  },
+                  "format": {
+                    "enum": [
+                      "mp4",
+                      "webm"
+                    ],
+                    "description": "mp4 (H.264 + AAC) or webm (VP9 + Opus)."
+                  },
+                  "captions": {
+                    "type": "boolean",
+                    "description": "Burn in captions."
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "op"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Export the edit as a timeline for a pro editor, linked to the original media: fcpxml = Final Cut Pro / DaVinci Resolve, edl = CMX3600 (any NLE), xmeml = Premiere Pro / Resolve XML.",
+            "properties": {
+              "op": {
+                "const": "export_nle"
+              },
+              "args": {
+                "type": "object",
+                "properties": {
+                  "format": {
+                    "enum": [
+                      "fcpxml",
+                      "edl",
+                      "xmeml"
+                    ],
+                    "description": "Timeline format."
+                  }
+                },
+                "required": [
+                  "format"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "op",
+              "args"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    "reply": {
+      "type": "string",
+      "description": "One short sentence for the user describing the plan."
+    }
+  },
+  "required": [
+    "ops"
+  ],
+  "additionalProperties": false
+}

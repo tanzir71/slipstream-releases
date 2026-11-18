@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy — Slipstream</title>
+<meta name="description" content="What Slipstream does on your device, the only network requests it makes, and what it never collects.">
+<meta name="theme-color" content="#ffffff">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="assets/brand/apple-touch-icon.png">
+<style>
+  @font-face{font-family:"Geist";src:url(assets/fonts/Geist-Variable.woff2) format("woff2");font-weight:100 900;font-display:swap}
+  @font-face{font-family:"Geist Mono";src:url(assets/fonts/GeistMono-Variable.woff2) format("woff2");font-weight:100 900;font-display:swap}
+  :root{
+    --paper:#ffffff; --mist:#f4f5f7;
+    --ink:#101114; --ink-2:#4a4e57; --ink-3:#7b7f89;
+    --line:#e6e7ea; --line-2:#d6d8dd;
+    --mint:#5ad1b0;
+    --mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:"Geist",-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;background:var(--paper);color:var(--ink);
+    font-size:17px;line-height:1.65;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+  a{color:inherit}
+  img{display:block;max-width:100%}
+  :focus-visible{outline:2px solid var(--ink);outline-offset:3px;border-radius:6px}
+  .wrap{max-width:1200px;margin:0 auto;padding:0 32px}
+  .nav{position:sticky;top:0;z-index:5;background:rgba(255,255,255,.88);backdrop-filter:saturate(1.6) blur(16px);-webkit-backdrop-filter:saturate(1.6) blur(16px);border-bottom:1px solid var(--line)}
+  .nav-in{display:flex;align-items:center;height:64px;gap:24px}
+  .brand img{height:26px;width:auto}
+  .nav-links{display:flex;align-items:center;gap:4px;margin-left:auto}
+  .nav-links a{font-size:14.5px;color:var(--ink-2);text-decoration:none;padding:8px 12px;border-radius:8px}
+  .nav-links a:hover{color:var(--ink);background:var(--mist)}
+  .nav-links .nav-web{color:var(--ink);border:1px solid var(--line-2);font-weight:550;margin-left:6px}
+  .doc{max-width:760px;padding-top:72px;padding-bottom:96px}
+  .crumb{font-size:14px;color:var(--ink-3)}
+  .crumb a{color:var(--ink-2);text-decoration:none}
+  h1{font-size:clamp(38px,5vw,54px);line-height:1.04;letter-spacing:-.04em;font-weight:600;margin-top:14px}
+  .lead{font-size:19px;color:var(--ink-2);margin-top:18px}
+  .updated{font-size:14px;color:var(--ink-3);margin-top:14px}
+  .summary{margin-top:36px;background:var(--mist);border:1px solid var(--line);border-radius:16px;padding:22px 26px}
+  .summary li{list-style:none;position:relative;padding-left:22px;margin:6px 0}
+  .summary li::before{content:"";position:absolute;left:2px;top:.62em;width:8px;height:8px;border-radius:9px;background:var(--mint)}
+  h2{font-size:26px;line-height:1.2;letter-spacing:-.025em;font-weight:600;margin-top:56px}
+  h3{font-size:18px;letter-spacing:-.01em;font-weight:600;margin-top:28px}
+  .doc p,.doc ul{margin-top:14px}
+  .doc ul{padding-left:20px}
+  .doc li{margin:6px 0}
+  .doc p a,.doc li a,.doc td a{text-decoration:underline;text-decoration-color:var(--line-2);text-underline-offset:3px}
+  .doc p a:hover,.doc li a:hover,.doc td a:hover{text-decoration-color:var(--ink)}
+  code{font-family:var(--mono);font-size:.86em;background:var(--mist);border:1px solid var(--line);border-radius:6px;padding:1px 6px}
+  .table{margin-top:18px;overflow-x:auto;border:1px solid var(--line);border-radius:14px}
+  table{width:100%;border-collapse:collapse;font-size:15px;line-height:1.5}
+  th,td{text-align:left;vertical-align:top;padding:12px 14px;border-top:1px solid var(--line)}
+  thead th{border-top:0;background:var(--mist);font-weight:600;font-size:14px;color:var(--ink-2)}
+  td:first-child{font-weight:550}
+  footer{border-top:1px solid var(--line);padding:40px 0 52px;font-size:14px;color:var(--ink-3)}
+  .foot{display:flex;flex-wrap:wrap;gap:12px 28px;align-items:center;justify-content:space-between}
+  .foot img{height:22px;width:auto}
+  .foot .links{display:flex;flex-wrap:wrap;gap:8px 18px}
+  .foot a{color:var(--ink-2);text-decoration:none}
+  .foot a:hover{color:var(--ink)}
+  @media(max-width:640px){
+    .wrap{padding:0 16px}
+    .nav-links a:not(.nav-web){display:none}
+    .doc{padding-top:48px;padding-bottom:72px}
+    h2{margin-top:44px}
+  }
+</style>
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-in">
+    <a class="brand" href="index.html" aria-label="Slipstream home"><img src="assets/brand/slipstream-logo.svg" alt="Slipstream" width="152" height="26"></a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="index.html#download">Download</a>
+      <a href="third-party.html">Third-party licences</a>
+      <a class="nav-web" href="app/">Open web app</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap doc">
+  <p class="crumb"><a href="index.html">Slipstream</a> / Privacy</p>
+  <h1>Privacy</h1>
+  <p class="lead">Slipstream is local-first. What you record, transcribe and edit stays on your device. There are no accounts, no analytics and no uploads.</p>
+  <p class="updated">Last updated November 2026</p>
+
+  <ul class="summary">
+    <li>Your recordings, audio, transcripts and projects never leave your device.</li>
+    <li>No accounts, no telemetry, no analytics, no ads, and no cookies set by Slipstream.</li>
+    <li>Slipstream Web goes online only to download its transcription library and AI models, each the first time you use the feature that needs it.</li>
+  </ul>
+
+  <h2>What runs on your device</h2>
+  <ul>
+    <li><b>Recording.</b> Your browser or operating system captures the screen, window or tab, the camera and the microphone, and Slipstream writes them straight to local storage.</li>
+    <li><b>Transcription.</b> Whisper runs inside Slipstream Web (WebGPU, or WebAssembly as a fallback) or inside the desktop app. Your audio is processed in place and never sent anywhere. You can also import an SRT or VTT file and skip the model entirely.</li>
+    <li><b>Editing.</b> Cuts, filler and pause removal, zooms, camera layouts, backgrounds and captions are computed locally.</li>
+    <li><b>Export.</b> Videos are encoded on your device with WebCodecs in the browser, or with the desktop engine. Finished files are saved wherever you choose.</li>
+    <li><b>Project storage.</b> Slipstream Web keeps projects in your browser’s own storage: project data in IndexedDB, and recordings and media in the Origin Private File System (OPFS). They stay in that browser profile on that device until you delete the project or clear the site’s data. The desktop apps save projects to folders on your computer.</li>
+  </ul>
+
+  <h2>The only network requests Slipstream Web makes</h2>
+  <p>Opening the web app loads its own files from this site. Apart from that, it makes the requests below, and only when you start the feature that needs them. Before a model downloads, the app shows its size. Your browser caches what it downloads, so later sessions don’t fetch it again.</p>
+  <div class="table">
+    <table>
+      <thead><tr><th>What</th><th>From</th><th>When</th></tr></thead>
+      <tbody>
+        <tr><td>Transformers.js, a pinned version, with ONNX Runtime Web</td><td>jsDelivr (<code>cdn.jsdelivr.net</code>)</td><td>The first time you transcribe or start another on-device AI feature</td></tr>
+        <tr><td>Whisper speech model</td><td>Hugging Face (<code>huggingface.co</code> and the file servers it redirects to)</td><td>The first time you transcribe with a given quality setting (about 40 to 250 MB)</td></tr>
+        <tr><td>Speaker labels model (pyannote segmentation)</td><td>Hugging Face</td><td>Only if you turn on speaker labels</td></tr>
+        <tr><td>Translation models (Helsinki-NLP OPUS-MT, one per language pair)</td><td>Hugging Face</td><td>Only if you translate subtitles, for the languages you pick</td></tr>
+        <tr><td>Copilot language model</td><td>Hugging Face</td><td>Only if you start the copilot and confirm the download</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>These requests download files to your device. They never include your recordings, audio, transcripts or project data. As with any web request, the server sees your IP address, your browser’s user agent and which file was requested. If your browser provides its own on-device language model, the copilot can use that instead. The browser manages that download.</p>
+
+  <h2>Optional cloud models with your own key</h2>
+  <p>Everything above works without an account or a key. If you choose to, you can add your own key for a cloud provider in the copilot’s cloud settings. Nothing is sent until you add a key, tick the consent box and then use the feature, and every cloud action is labelled <em>Cloud</em> in the app.</p>
+  <div class="table">
+    <table>
+      <thead><tr><th>Feature</th><th>Providers you can pick</th><th>What is sent</th></tr></thead>
+      <tbody>
+        <tr><td>Copilot, for requests the on-device parser can’t handle</td><td>Anthropic (<code>api.anthropic.com</code>, through Anthropic’s SDK from jsDelivr), OpenRouter (<code>openrouter.ai</code>), or an OpenAI-compatible endpoint you enter (OpenAI at <code>api.openai.com</code>, or local servers such as LM Studio and Ollama)</td><td>Your request, the transcript text and a short summary of the edit</td></tr>
+        <tr><td>Generated B-roll images and video clips</td><td>OpenRouter, Higgsfield (<code>api.higgsfield.ai</code>, desktop apps only) or an OpenAI-compatible endpoint</td><td>The prompt you type for the clip</td></tr>
+        <tr><td>Generated background music</td><td>ElevenLabs (<code>api.elevenlabs.io</code>)</td><td>The prompt you type and the length you pick</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>You can also share an export through <strong>your own storage</strong>: set up an S3-compatible bucket (AWS S3, Cloudflare R2, Backblaze B2, MinIO and others) and Slipstream uploads the finished video straight from your device to that bucket and makes a link that expires within seven days. Only the files you choose to share are uploaded, only to the bucket you configured, and the access keys stay on your device.</p>
+  <p>Recorded video and audio are never sent. Keys are stored only on your device (in this browser’s storage, or the system keychain in the desktop apps) and are never written into projects, <code>.slipstream</code> files or exports. Usage is billed by the provider under your account and covered by their privacy policy. You can remove all keys from the same settings at any time.</p>
+
+  <h2>The desktop apps</h2>
+  <ul>
+    <li>No accounts, no telemetry and no uploads. Recording, transcription, editing and export run on your computer.</li>
+    <li>While you record the whole screen, the desktop apps note where the pointer is and when you click, so zooms can follow your clicks. Keystrokes aren't recorded, except by the macOS app's optional keystroke overlay: it only works after you grant Accessibility access, draws the keys you press into your video, and keeps them in that project's folder on your Mac (never in <code>.slipstream</code> files). Pointer positions stay with that project on your device, and in <code>.slipstream</code> files you export from it.</li>
+    <li>On Windows and Linux, the app can download the FFmpeg and whisper runtimes (whisper.cpp) from GitHub or Hugging Face when you choose to install them. It shows the size and the host first, checks each download against a pinned SHA-256 before unpacking it, and sends nothing about you or your recordings. You can also install from a file you already have. The macOS app uses Apple’s built-in frameworks and downloads no runtime.</li>
+    <li>Update checks happen only when you ask (Check for updates). The app then reads <code>latest.json</code> from the project’s GitHub Releases (one request to github.com, no cookies). If you choose to install an update, it’s downloaded from GitHub (served via githubusercontent.com) and checked before it installs: on Windows and Linux against the updater signature, on the Mac against its SHA-256 and the same signing certificate as the copy you have. Nothing else is sent.</li>
+    <li>Installers are served from this site or from <a href="https://github.com/tanzir71/slipstream-releases/releases">GitHub Releases</a>, with SHA-256 checksums so you can verify them.</li>
+  </ul>
+
+  <h2>This website</h2>
+  <p>This site and Slipstream Web are static files hosted on GitHub Pages. As with any web host, GitHub receives ordinary request data for each page and file: your IP address, user agent and the address requested. GitHub handles that data under the <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub General Privacy Statement</a>. The site serves its fonts and images itself, runs no analytics or tracking scripts, and sets no cookies of its own.</p>
+  <p>Links to other sites (GitHub, Unsplash, tanziro.com, Buy Me a Coffee) are plain links. Nothing loads from them until you click, and their own privacy policies apply once you do.</p>
+
+  <h2>Your controls</h2>
+  <ul>
+    <li>Delete a project in Slipstream Web to remove its media from browser storage. Clearing this site’s data in your browser settings removes every project and every cached model.</li>
+    <li>Import captions as SRT or VTT if you would rather not download a speech model.</li>
+    <li>Leave speaker labels, translation and the copilot off, and those models are never fetched.</li>
+  </ul>
+
+  <h2>Questions</h2>
+  <p>Open an issue on <a href="https://github.com/tanzir71/slipstream-releases/issues">GitHub</a>. If this page changes, the date at the top changes with it.</p>
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <a href="index.html" aria-label="Slipstream home"><img src="assets/brand/slipstream-logo.svg" alt="Slipstream" width="129" height="22"></a>
+    <div class="links"><a href="index.html">Home</a><a href="app/">Web app</a><a href="index.html#download">Download</a><a href="privacy.html" aria-current="page">Privacy</a><a href="third-party.html">Third-party licences</a><a href="https://github.com/tanzir71/slipstream-releases">GitHub</a></div>
+  </div>
+</footer>
+
+</body>
+</html>

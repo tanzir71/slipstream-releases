@@ -1,0 +1,82 @@
+{
+  "version": "2.0.1",
+  "published": false,
+  "notes": "Slipstream 2.0.1: fixes Mac recordings quitting when they start, makes Mac takes crash-safe while the screen is still, and moves downloads and updates to tanzir71/slipstream-releases.",
+  "pub_date": "2026-11-18T19:35:28Z",
+  "repo": "tanzir71/slipstream-releases",
+  "tag": "v2.0.1",
+  "assets": {
+    "windows": [
+      {
+        "name": "slipstream-windows-x64-setup.exe",
+        "kind": "exe",
+        "size": 15511623,
+        "sha256": "48f7ba61a1843a65bf034e8fcc653ec045194e07d56bd1efedca32effd5c8c38",
+        "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.0.1/slipstream-windows-x64-setup.exe",
+        "fallback": "download/slipstream-windows-x64-setup.exe"
+      },
+      {
+        "name": "slipstream-windows-x64.msi",
+        "kind": "msi",
+        "size": 18026496,
+        "sha256": "78ebba4e135489640d97a69024f956e1f488ada37b6ead4aeb27c2ea25d2393f",
+        "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.0.1/slipstream-windows-x64.msi",
+        "fallback": "download/slipstream-windows-x64.msi"
+      }
+    ],
+    "macos": [
+      {
+        "name": "slipstream-macos.dmg",
+        "kind": "dmg",
+        "size": 5691925,
+        "sha256": "8963e98fa33861b0190dd9ce75393fd372c18d096ebf771eabd268915adc1ace",
+        "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.0.1/slipstream-macos.dmg",
+        "fallback": "download/slipstream-macos.dmg"
+      },
+      {
+        "name": "slipstream-macos.zip",
+        "kind": "zip",
+        "size": 5659236,
+        "sha256": "a5ffea335140cd9024c4c0110c210934d85a59d18376200e6eaab3bf89c259a9",
+        "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.0.1/slipstream-macos.zip",
+        "fallback": "download/slipstream-macos.zip"
+      }
+    ],
+    "linux": [
+      {
+        "name": "slipstream-linux-x64.AppImage",
+        "kind": "appimage",
+        "size": 164063736,
+        "sha256": "92655f562e6342b80bfd98508e0c33cc208b5f16d0100e5c6ec9968edf5439ce",
+        "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.0.1/slipstream-linux-x64.AppImage",
+        "fallback": "download/slipstream-linux-x64.AppImage"
+      },
+      {
+        "name": "slipstream-linux-x64.deb",
+        "kind": "deb",
+        "size": 18071438,
+        "sha256": "2af152912e90e57f643545f8ff43801cdcbac0f12960d1312ac1ae73cd36e602",
+        "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.0.1/slipstream-linux-x64.deb",
+        "fallback": "download/slipstream-linux-x64.deb"
+      }
+    ]
+  },
+  "platforms": {
+    "windows-x86_64": {
+      "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.0.1/slipstream-windows-x64-setup.exe",
+      "signature": ""
+    },
+    "darwin-aarch64": {
+      "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.0.1/slipstream-macos.zip",
+      "signature": ""
+    },
+    "darwin-x86_64": {
+      "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.0.1/slipstream-macos.zip",
+      "signature": ""
+    },
+    "linux-x86_64": {
+      "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.0.1/slipstream-linux-x64.AppImage",
+      "signature": ""
+    }
+  }
+}

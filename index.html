@@ -1,0 +1,913 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Slipstream — polished screen recordings, ready the moment you stop</title>
+<meta name="description" content="Free screen and camera recorder for macOS, Windows, Linux and the browser. Auto-zoom, framed camera, on-device captions and filler removal are done when you hit stop. Nothing is uploaded.">
+<meta name="theme-color" content="#ffffff">
+<meta property="og:title" content="Slipstream — polished screen recordings, ready the moment you stop">
+<meta property="og:description" content="Auto-zoom, framed camera, on-device captions and filler removal, done when you hit stop. Free on macOS, Windows, Linux and in the browser.">
+<meta property="og:image" content="assets/img/og.png">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="assets/brand/apple-touch-icon.png">
+<link rel="preload" href="assets/fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/img/screen-slate.webp" as="image" imagesrcset="assets/img/screen-slate-1440.webp 1440w, assets/img/screen-slate.webp 2400w, assets/img/screen-slate-3840.webp 3840w" imagesizes="(min-width:1280px) 1571px, calc(127.5vw - 61px)">
+<style>
+  @font-face{font-family:"Geist";src:url(assets/fonts/Geist-Variable.woff2) format("woff2");font-weight:100 900;font-display:swap}
+  @font-face{font-family:"Geist Mono";src:url(assets/fonts/GeistMono-Variable.woff2) format("woff2");font-weight:100 900;font-display:swap}
+  @font-face{font-family:"Newsreader";src:url(assets/fonts/Newsreader-Variable.woff2) format("woff2");font-weight:200 800;font-display:swap}
+  @font-face{font-family:"Newsreader";src:url(assets/fonts/Newsreader-Italic-Variable.woff2) format("woff2");font-weight:200 800;font-style:italic;font-display:swap}
+  :root{
+    --paper:#ffffff; --mist:#f4f5f7;
+    --ink:#101114; --ink-2:#4a4e57; --ink-3:#7b7f89;
+    --line:#e6e7ea; --line-2:#d6d8dd;
+    --signal:#ff3a1f; --signal-soft:#fff0ec;
+    --night:#0a0b0d;
+    --r-l:20px; --r-xl:28px;
+    --shadow-rec:0 0 0 1px rgba(10,12,20,.08), 0 30px 60px -14px rgba(10,12,20,.38), 0 12px 24px -10px rgba(10,12,20,.22);
+    --mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+    --ease:cubic-bezier(.22,.8,.2,1);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{font-family:"Geist",-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;background:var(--paper);color:var(--ink);
+    font-size:17px;line-height:1.6;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;overflow-x:hidden}
+  a{color:inherit;text-decoration:none}
+  img{display:block;max-width:100%}
+  :focus-visible{outline:2px solid var(--ink);outline-offset:3px;border-radius:6px}
+  .wrap{max-width:1200px;margin:0 auto;padding:0 32px}
+
+  /* Buttons */
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:9px;font:550 15px/1 "Geist",system-ui,sans-serif;border-radius:10px;
+    padding:13px 18px;border:1px solid transparent;cursor:pointer;transition:background .15s,border-color .15s;white-space:nowrap}
+  .btn svg{width:17px;height:17px;flex:none}
+  .btn-primary{background:var(--ink);color:#fff;box-shadow:0 1px 0 rgba(255,255,255,.14) inset,0 1px 2px rgba(16,17,20,.3)}
+  .btn-primary:hover{background:#2a2c31}
+  .btn-ghost{background:#fff;color:var(--ink);border-color:var(--line-2);box-shadow:0 1px 2px rgba(16,17,20,.05)}
+  .btn-ghost:hover{border-color:#b9bcc3}
+  .hero .cta-row .btn{padding:15px 22px;font-size:16px;border-radius:12px}
+
+  /* Nav */
+  .nav{position:sticky;top:0;z-index:50;background:rgba(255,255,255,.82);backdrop-filter:saturate(1.6) blur(16px);-webkit-backdrop-filter:saturate(1.6) blur(16px);border-bottom:1px solid transparent;transition:border-color .2s}
+  .nav.scrolled{border-bottom-color:var(--line)}
+  .nav-in{display:flex;align-items:center;height:64px;gap:24px}
+  .brand{display:flex;align-items:center}
+  .brand img{height:26px;width:auto}
+  .nav-links{display:flex;align-items:center;gap:4px;margin-left:auto}
+  .nav-links a{font-size:14.5px;color:var(--ink-2);padding:8px 12px;border-radius:8px;transition:color .15s,background .15s}
+  .nav-links a:hover{color:var(--ink);background:var(--mist)}
+  .nav-links .nav-web{color:var(--ink);border:1px solid var(--line-2);margin-left:10px;font-weight:550}
+  .nav-links .nav-web:hover{background:#fff;border-color:#b9bcc3}
+  .nav-links .nav-cta{color:#fff;padding:9px 15px;font-size:14.5px;border-radius:9px;margin-left:4px}
+  .nav-links .nav-cta:hover{color:#fff;background:#2a2c31}
+
+  /* Hero */
+  .hero{padding:76px 0 0;text-align:center}
+  .badge{display:inline-flex;align-items:center;gap:10px;font-size:14px;color:var(--ink-2);padding:5px 14px 5px 6px;border-radius:99px;
+    border:1px solid var(--line);background:#fff;box-shadow:0 1px 2px rgba(16,17,20,.04);transition:border-color .15s}
+  .badge:hover{border-color:var(--line-2)}
+  .badge .pill-new{display:inline-flex;align-items:center;gap:6px;background:var(--signal-soft);color:#c62a12;font-weight:600;font-size:12.5px;padding:3px 10px 3px 8px;border-radius:99px}
+  .badge .pill-new i{width:7px;height:7px;border-radius:9px;background:var(--signal);box-shadow:0 0 0 3px rgba(255,58,31,.18)}
+  .badge b{color:var(--ink);font-weight:550}
+  h1{font-size:clamp(44px,6.6vw,80px);line-height:.98;letter-spacing:-.045em;font-weight:600;margin:28px auto 0;max-width:960px}
+  .desktop-tail{display:inline}
+  .sub{font-size:clamp(17px,1.9vw,20px);line-height:1.55;color:var(--ink-2);margin:26px auto 0;max-width:640px}
+  .cta-row{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:34px}
+  .avail{margin-top:18px;font-size:14px;color:var(--ink-3)}
+  .avail a{color:var(--ink-2);text-decoration:underline;text-decoration-color:var(--line-2);text-underline-offset:3px}
+
+  /* Stage: a Slipstream composition rendered in HTML */
+  .stage-wrap{margin:64px auto 0;max-width:1280px;padding:0 24px}
+  .stage{position:relative;aspect-ratio:16/9;border-radius:var(--r-xl);overflow:hidden;background:#b8c6d8;isolation:isolate;container-type:inline-size;
+    box-shadow:0 0 0 1px rgba(16,17,20,.06),0 40px 80px -30px rgba(16,24,40,.35)}
+  .stage .wall{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transition:opacity .7s var(--ease)}
+  .stage .wall.next{opacity:0}
+  .rec{position:absolute;left:7.5%;top:8.5%;width:85%;height:83%;border-radius:1.1cqw;overflow:hidden;box-shadow:var(--shadow-rec);background:#f6f6f4;
+    transition:left .7s var(--ease),top .7s var(--ease),width .7s var(--ease),height .7s var(--ease)}
+  .rec .zoom{position:absolute;inset:0;transform-origin:0 0}
+  .rec .zoom img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:left top}
+  .rec .zoom img.shot2{opacity:0;transition:opacity .2s}
+  .cursor{position:absolute;width:1.9%;left:30%;top:60%;z-index:3;filter:drop-shadow(0 1px 1.5px rgba(0,0,0,.35));will-change:left,top}
+  .ripple{position:absolute;width:4.5%;aspect-ratio:1;border-radius:50%;border:2px solid rgba(255,58,31,.85);background:rgba(255,58,31,.12);transform:translate(-50%,-50%) scale(.2);opacity:0;z-index:2}
+  .cam{position:absolute;left:3.4%;bottom:5.5%;width:14.5%;aspect-ratio:1;border-radius:50%;overflow:hidden;z-index:4;
+    box-shadow:0 0 0 .28cqw rgba(255,255,255,.96),0 18px 40px -10px rgba(10,12,20,.55);
+    transition:left .7s var(--ease),bottom .7s var(--ease),width .7s var(--ease),height .7s var(--ease),border-radius .7s var(--ease),opacity .4s}
+  .cam img{width:100%;height:100%;object-fit:cover;object-position:50% 30%;transform:scaleX(-1)}
+
+  /* Caption styles (mirrors the app's presets) */
+  .caption{position:absolute;left:50%;bottom:6%;transform:translateX(-50%);z-index:5;max-width:64%;text-align:center;white-space:nowrap;
+    font-family:"Geist",system-ui,sans-serif;font-weight:560;font-size:1.95cqw;line-height:1.3;letter-spacing:-.005em;color:#fff;
+    padding:.55cqw 1.15cqw;border-radius:.8cqw;background:rgba(14,15,18,.62);backdrop-filter:blur(12px) saturate(1.3);-webkit-backdrop-filter:blur(12px) saturate(1.3);
+    transition:opacity .3s,left .7s var(--ease)}
+  .caption span{opacity:.62;transition:opacity .12s}
+  .caption span.on,.caption span.now{opacity:1}
+  .stage[data-captions="cinema"] .caption{background:none;backdrop-filter:none;-webkit-backdrop-filter:none;font-weight:520;font-size:2.05cqw;letter-spacing:0;
+    text-shadow:0 0 .4cqw rgba(0,0,0,.55),0 .1cqw .3cqw rgba(0,0,0,.6)}
+  .stage[data-captions="cinema"] .caption span{opacity:1}
+  .stage[data-captions="editorial"] .caption{background:none;backdrop-filter:none;-webkit-backdrop-filter:none;font-family:"Newsreader",Georgia,serif;font-style:italic;font-weight:440;
+    font-size:2.5cqw;letter-spacing:-.005em;text-shadow:0 0 .5cqw rgba(0,0,0,.5),0 .1cqw .3cqw rgba(0,0,0,.55)}
+  .stage[data-captions="editorial"] .caption span{opacity:1}
+  .stage[data-captions="bold"] .caption{background:none;backdrop-filter:none;-webkit-backdrop-filter:none;font-weight:780;font-size:2.7cqw;letter-spacing:-.025em;text-transform:uppercase;
+    text-shadow:0 .15cqw 0 rgba(0,0,0,.35),0 0 1cqw rgba(0,0,0,.35)}
+  .stage[data-captions="bold"] .caption span{opacity:1}
+  .stage[data-captions="bold"] .caption span.now{color:#ffd34d}
+  .stage[data-captions="off"] .caption{opacity:0}
+
+  /* Layouts */
+  .stage[data-layout="split"] .rec{left:4%;top:9%;width:60%;height:82%}
+  .stage[data-layout="split"] .cam{left:66.5%;bottom:9%;width:29.5%;height:82%;border-radius:1.2cqw}
+  .stage[data-layout="split"] .caption{left:34%}
+  .stage[data-layout="screen"] .cam{opacity:0;width:8%}
+  .stage[data-layout="screen"] .rec{left:6%;top:7%;width:88%;height:86%}
+
+  /* Transcript overlay used by the "cuts" demo */
+  .tx{position:absolute;right:3.2%;top:8%;width:35%;z-index:6;background:rgba(255,255,255,.94);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+    border-radius:1.1cqw;padding:1.5cqw 1.7cqw;font-size:1.32cqw;line-height:1.75;color:var(--ink);box-shadow:0 24px 50px -16px rgba(10,12,20,.45);
+    opacity:0;transform:translateY(1cqw);transition:opacity .4s,transform .5s var(--ease);pointer-events:none}
+  .tx b{font-weight:600}
+  .tx .t{font-family:var(--mono);font-size:1.02cqw;color:var(--ink-3);margin-right:.6cqw}
+  .tx s{color:#c62a12;background:var(--signal-soft);border-radius:.3cqw;padding:0 .2cqw}
+  .tx .pause{display:inline-block;font-family:var(--mono);font-size:1cqw;color:#c62a12;background:var(--signal-soft);border-radius:.4cqw;padding:0 .4cqw;text-decoration:line-through}
+  .tx .tx-head{display:flex;justify-content:space-between;align-items:center;font-size:1.12cqw;color:var(--ink-3);margin-bottom:.8cqw}
+  .tx .tx-head em{font-style:normal;color:#0f8a5f;background:#eaf7f1;border-radius:99px;padding:.1cqw .8cqw}
+  .stage[data-tx="on"] .tx{opacity:1;transform:none}
+  .stage[data-tx="on"] .rec{left:4%;width:57%;height:78%;top:11%}
+
+  /* Sections */
+  section{padding:120px 0}
+  .head{max-width:720px}
+  .head.c{margin:0 auto;text-align:center}
+  h2{font-size:clamp(34px,4.4vw,54px);line-height:1.04;letter-spacing:-.04em;font-weight:600}
+  .lead{font-size:clamp(17px,1.6vw,19px);color:var(--ink-2);margin-top:18px;line-height:1.6}
+  h3{font-size:19px;letter-spacing:-.02em;font-weight:600;line-height:1.3}
+
+  /* After-stop demo */
+  .demo{display:grid;grid-template-columns:minmax(300px,370px) 1fr;gap:56px;margin-top:64px;align-items:center}
+  .steps{display:flex;flex-direction:column;gap:2px}
+  .step{all:unset;box-sizing:border-box;cursor:pointer;display:block;padding:16px 18px 16px 22px;border-radius:14px;position:relative;transition:background .2s}
+  .step::before{content:"";position:absolute;left:0;top:18px;bottom:18px;width:2px;border-radius:2px;background:var(--line);transition:background .2s}
+  .step h3{font-size:17px;color:var(--ink-3);transition:color .2s;display:flex;align-items:center;gap:10px}
+  .step h3 svg{width:18px;height:18px;flex:none}
+  .step p{font-size:15px;color:var(--ink-2);margin-top:6px;display:none}
+  .step:hover h3{color:var(--ink)}
+  .step[aria-selected="true"]{background:var(--mist)}
+  .step[aria-selected="true"]::before{background:var(--ink)}
+  .step[aria-selected="true"] h3{color:var(--ink)}
+  .step[aria-selected="true"] p{display:block}
+  .step:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+  .demo .stage{border-radius:var(--r-l)}
+  .picker{display:flex;gap:8px;margin-top:16px;justify-content:center;flex-wrap:wrap;min-height:38px}
+  .picker[hidden]{display:none}
+  .swatch{all:unset;cursor:pointer;width:54px;height:34px;border-radius:8px;background-size:cover;background-position:center;box-shadow:0 0 0 1px rgba(16,17,20,.1);transition:box-shadow .15s}
+  .swatch[aria-pressed="true"],.swatch:focus-visible{box-shadow:0 0 0 2px #fff,0 0 0 4px var(--ink)}
+  .chip{all:unset;cursor:pointer;font-size:14px;padding:8px 14px;border-radius:9px;border:1px solid var(--line-2);color:var(--ink-2);background:#fff;transition:border-color .15s,color .15s}
+  .chip[aria-pressed="true"]{border-color:var(--ink);color:var(--ink);box-shadow:0 0 0 1px var(--ink) inset}
+  .chip:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+  .chip.serif{font-family:"Newsreader",Georgia,serif;font-style:italic;font-size:15.5px}
+  .chip.heavy{font-weight:780;text-transform:uppercase;letter-spacing:-.01em;font-size:13px}
+
+  /* Transcript editing */
+  .split{display:grid;grid-template-columns:1fr 1.35fr;gap:72px;align-items:center}
+  .ticks{list-style:none;margin-top:28px;display:grid;gap:14px}
+  .ticks li{display:grid;grid-template-columns:22px 1fr;gap:12px;font-size:16px;color:var(--ink-2)}
+  .ticks li b{color:var(--ink);font-weight:600}
+  .ticks svg{width:20px;height:20px;margin-top:3px;color:var(--ink)}
+  .shot-frame{padding:30px;border-radius:var(--r-xl);background:url(assets/img/grad-dusk.webp) center/cover}
+  .shot{border-radius:12px;overflow:hidden;box-shadow:0 0 0 1px rgba(255,255,255,.08),0 40px 80px -30px rgba(0,0,0,.6),0 16px 30px -18px rgba(0,0,0,.5);background:#111}
+  .shot img{width:100%;height:auto}
+
+  /* Shapes */
+  .shapes{display:grid;grid-template-columns:1.62fr .58fr 1fr;gap:28px;margin-top:64px;align-items:end}
+  .shape{margin:0}
+  .frame{position:relative;border-radius:18px;overflow:hidden;box-shadow:0 0 0 1px rgba(16,17,20,.06),0 30px 60px -28px rgba(16,24,40,.45);container-type:inline-size}
+  .frame > img.bg{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+  .f169{aspect-ratio:16/9}.f916{aspect-ratio:9/16}.f11{aspect-ratio:1}
+  .f169 .win{position:absolute;left:8%;top:9%;width:84%;height:82%;border-radius:1.4cqw;overflow:hidden;box-shadow:var(--shadow-rec)}
+  .f169 .win img{width:100%;height:100%;object-fit:cover;object-position:left top}
+  .f169 .bub{position:absolute;left:4.5%;bottom:6%;width:16%;aspect-ratio:1;border-radius:50%;overflow:hidden;box-shadow:0 0 0 .45cqw #fff,0 10px 24px -6px rgba(0,0,0,.5)}
+  .bub img{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+  .f169 .cc{position:absolute;left:50%;bottom:7%;transform:translateX(-50%);font-weight:520;font-size:2.1cqw;color:#fff;white-space:nowrap;
+    padding:.45cqw 1.1cqw;border-radius:.8cqw;background:rgba(14,15,18,.72)}
+  .f916 .portrait{position:absolute;inset:0}
+  .f916 .portrait img{width:100%;height:100%;object-fit:cover}
+  .f916 .mini{position:absolute;left:7%;right:7%;top:6%;aspect-ratio:16/11;border-radius:4cqw;overflow:hidden;box-shadow:0 14px 30px -10px rgba(0,0,0,.6)}
+  .f916 .mini img{width:100%;height:100%;object-fit:cover;object-position:0 0}
+  .f916 .cc{position:absolute;left:8%;right:8%;bottom:15%;text-align:center;font-weight:780;font-size:9cqw;line-height:1.02;color:#fff;text-transform:uppercase;letter-spacing:-.03em;
+    text-shadow:0 .5cqw 0 rgba(0,0,0,.3),0 0 3cqw rgba(0,0,0,.4)}
+  .f916 .cc em{font-style:normal;color:#ffd34d}
+  .f11 .top{position:absolute;left:6%;right:6%;top:6%;height:56%;border-radius:2.6cqw;overflow:hidden;box-shadow:var(--shadow-rec)}
+  .f11 .top img{width:100%;height:100%;object-fit:cover;object-position:0 0}
+  .f11 .bot{position:absolute;left:6%;right:6%;bottom:6%;height:32%;border-radius:2.6cqw;overflow:hidden;box-shadow:0 14px 30px -12px rgba(0,0,0,.45)}
+  .f11 .bot img{width:100%;height:100%;object-fit:cover;object-position:50% 26%;transform:scaleX(-1)}
+  .f11 .bot span{position:absolute;left:4cqw;bottom:3cqw;font-family:"Newsreader",Georgia,serif;font-style:italic;font-size:4.2cqw;color:#fff;text-shadow:0 0 1.2cqw rgba(0,0,0,.55)}
+  .shape figcaption{margin-top:16px;font-size:15px;color:var(--ink-2)}
+  .shape figcaption b{display:block;color:var(--ink);font-weight:600;font-size:16px}
+
+  /* Use cases */
+  .uses{display:grid;grid-template-columns:repeat(4,1fr);gap:24px;margin-top:56px}
+  .use .ph{aspect-ratio:4/5;border-radius:16px;overflow:hidden;background:var(--mist)}
+  .use .ph img{width:100%;height:100%;object-fit:cover;transition:transform .8s var(--ease)}
+  .use:hover .ph img{transform:scale(1.03)}
+  .use h3{margin-top:18px;font-size:18px}
+  .use p{font-size:15px;color:var(--ink-2);margin-top:6px}
+
+  /* Details list */
+  .details{display:grid;grid-template-columns:repeat(3,1fr);gap:40px 48px;margin-top:72px;border-top:1px solid var(--line);padding-top:48px}
+  .detail svg{width:22px;height:22px;color:var(--ink)}
+  .detail h3{font-size:17px;margin-top:14px}
+  .detail p{font-size:15px;color:var(--ink-2);margin-top:6px}
+
+  /* Privacy band */
+  .private{position:relative;color:#fff;padding:0;background:var(--night);overflow:hidden}
+  .private .bgph{position:absolute;inset:0;background:url(assets/img/wall-fog.webp) center 40%/cover;opacity:.5}
+  .private .bgph::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(10,11,13,.3),rgba(10,11,13,.92) 85%)}
+  .private .wrap{position:relative;padding-top:150px;padding-bottom:110px}
+  .private h2{max-width:760px}
+  .private .lead{color:rgba(255,255,255,.75);max-width:600px}
+  .facts{display:grid;grid-template-columns:repeat(3,1fr);margin-top:72px;border-top:1px solid rgba(255,255,255,.18)}
+  .fact{padding:28px 32px 0 0}
+  .fact + .fact{padding-left:32px;border-left:1px solid rgba(255,255,255,.18)}
+  .fact h3{font-size:18px;color:#fff}
+  .fact p{font-size:15px;color:rgba(255,255,255,.68);margin-top:8px}
+
+  /* Ways to run */
+  .ways{display:grid;grid-template-columns:repeat(3,1fr);margin-top:56px;border-top:1px solid var(--line)}
+  .way{padding:36px 36px 8px 0}
+  .way + .way{padding-left:36px;border-left:1px solid var(--line)}
+  .way .vis{height:124px;display:flex;align-items:flex-end;margin-bottom:24px}
+  .way .vis img.icon{height:96px;width:auto;filter:drop-shadow(0 14px 18px rgba(16,17,20,.25))}
+  .way .browser{width:212px;height:116px;border-radius:12px;border:1px solid var(--line-2);background:#fff;overflow:hidden;box-shadow:0 18px 30px -18px rgba(16,24,40,.4)}
+  .way .browser .bar{height:20px;background:var(--mist);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:5px;padding:0 8px}
+  .way .browser .bar i{width:7px;height:7px;border-radius:9px;background:var(--line-2)}
+  .way .browser .bar span{margin-left:10px;font-size:9.5px;color:var(--ink-3);background:#fff;border-radius:4px;padding:0 18px}
+  .way .browser img{width:100%;height:96px;object-fit:cover;object-position:0 0}
+  .way .term{width:236px;height:116px;border-radius:12px;background:#0f1013;color:#c9ccd3;font:500 11px/1.7 var(--mono);padding:12px 14px;box-shadow:0 18px 30px -18px rgba(16,24,40,.6)}
+  .way .term b{color:#fff;font-weight:500}.way .term i{font-style:normal;color:#7ee2b8}
+  .way p{font-size:15.5px;color:var(--ink-2);margin-top:8px}
+  .way ul{list-style:none;margin-top:16px;display:grid;gap:6px;font-size:14.5px;color:var(--ink-2)}
+  .way li::before{content:"";display:inline-block;width:5px;height:5px;border-radius:5px;background:var(--ink-3);margin:0 10px 2px 0}
+  .way .btn{margin-top:22px}
+
+  /* Comparison */
+  .matrix-scroll{overflow-x:auto;margin-top:48px;border:1px solid var(--line);border-radius:16px;background:#fff}
+  table{border-collapse:collapse;width:100%;min-width:980px;font-size:14px}
+  th,td{padding:14px 16px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+  thead th{font-size:13px;font-weight:550;color:var(--ink-3);background:var(--mist)}
+  tbody tr:last-child td{border-bottom:none}
+  td.tool{font-weight:600;color:var(--ink);white-space:nowrap}
+  td.tool small{display:block;font-weight:400;color:var(--ink-3);font-size:12.5px;margin-top:2px}
+  td.yes{color:var(--ink)}
+  td.yes::before,td.part::before,td.no::before{content:"";display:inline-block;width:7px;height:7px;border-radius:9px;margin:0 8px 1px 0}
+  td.yes::before{background:#18a36f}
+  td.part{color:var(--ink-2)}
+  td.part::before{background:#f0a92e}
+  td.no{color:var(--ink-3)}
+  td.no::before{border:1.5px solid #c3c6cc;width:5px;height:5px}
+  tr.us-row td{background:#fbfbfc}
+  tr.us-row td.tool{box-shadow:inset 3px 0 0 var(--signal)}
+  .note{text-align:center;margin-top:16px;font-size:13px;color:var(--ink-3)}
+
+  /* Downloads */
+  #download{background:var(--mist);border-top:1px solid var(--line)}
+  .final{text-align:center}
+  .final > p{color:var(--ink-2);max-width:620px;margin:18px auto 0}
+  .final .app-icon{width:104px;height:104px;margin:0 auto 28px;filter:drop-shadow(0 18px 24px rgba(16,17,20,.28))}
+  .download-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:48px;text-align:left}
+  .download-card{display:grid;grid-template-rows:108px 94px auto;gap:12px;background:#fff;border:1px solid var(--line);border-radius:16px;padding:24px;box-shadow:0 1px 2px rgba(16,17,20,.04)}
+  .download-copy{min-height:86px}
+  .download-copy .os{width:30px;height:30px;color:var(--ink);margin-bottom:14px}
+  .download-copy h3{font-size:19px}
+  .download-copy p{font-size:14.5px;color:var(--ink-2);margin-top:4px}
+  .download-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;min-height:94px;align-content:start}
+  .download-actions .btn-primary{grid-column:1/-1;padding:12px 14px;font-size:14.5px}
+  .download-link{display:flex;align-items:center;justify-content:center;font-size:13.5px;font-weight:550;color:var(--ink-2);border:1px solid var(--line-2);border-radius:9px;padding:9px 10px;transition:border-color .15s,color .15s}
+  .download-link:hover{color:var(--ink);border-color:#b9bcc3}
+  .download-meta{font-size:13px;color:var(--ink-3);line-height:1.5}
+  .web-card{display:grid;grid-template-columns:auto 1fr auto;gap:22px;align-items:center;margin-top:16px;text-align:left;background:#fff;border:1px solid var(--line);border-radius:16px;padding:20px 24px;transition:border-color .15s}
+  .web-card:hover{border-color:var(--line-2)}
+  .web-card .thumb{width:128px;aspect-ratio:16/10;border-radius:8px;overflow:hidden;box-shadow:0 0 0 1px var(--line)}
+  .web-card .thumb img{width:100%;height:100%;object-fit:cover;object-position:0 0}
+  .web-card h3{font-size:17px}
+  .web-card p{font-size:14.5px;color:var(--ink-2);margin-top:4px}
+  .final .cta-row{margin-top:28px}
+  .reassure{margin-top:14px;font-size:13.5px;color:var(--ink-3)}
+
+  /* FAQ */
+  .faq-grid{display:grid;grid-template-columns:.8fr 1.2fr;gap:72px}
+  .faq details{border-bottom:1px solid var(--line)}
+  .faq details:first-child{border-top:1px solid var(--line)}
+  .faq summary{list-style:none;cursor:pointer;padding:20px 36px 20px 0;font-weight:550;font-size:16.5px;position:relative}
+  .faq summary::-webkit-details-marker{display:none}
+  .faq summary::after{content:"";position:absolute;right:6px;top:27px;width:9px;height:9px;border-right:1.6px solid var(--ink-3);border-bottom:1.6px solid var(--ink-3);transform:rotate(45deg);transition:transform .2s}
+  .faq details[open] summary::after{transform:rotate(225deg);top:31px}
+  .faq details p{color:var(--ink-2);font-size:15.5px;padding:0 36px 22px 0}
+  .faq code{font-family:var(--mono);font-size:13px;background:var(--mist);padding:2px 6px;border-radius:5px}
+
+  /* Footer */
+  footer{border-top:1px solid var(--line);padding:48px 0 56px;font-size:14px;color:var(--ink-3)}
+  .foot{display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:32px;align-items:start}
+  .foot img{height:24px;width:auto;margin-bottom:14px}
+  .foot a{color:var(--ink-2)}
+  .foot a:hover{color:var(--ink)}
+  .foot .links{display:flex;flex-wrap:wrap;gap:8px 18px}
+  .credits{font-size:12.5px;line-height:1.6}
+
+  @media(max-width:1080px){
+    .demo{grid-template-columns:1fr;gap:28px}
+    .steps{display:grid;grid-template-columns:repeat(5,minmax(160px,1fr));overflow-x:auto;gap:6px;padding-bottom:4px}
+    .step::before{left:18px;right:18px;top:auto;bottom:0;width:auto;height:2px}
+    .step p{display:none!important}
+    .split{grid-template-columns:1fr;gap:40px}
+    .shapes{grid-template-columns:1fr 1fr;align-items:start}
+    .shape-169{grid-column:1/-1}
+    .uses{grid-template-columns:repeat(2,1fr)}
+    .details{grid-template-columns:repeat(2,1fr)}
+    .ways{grid-template-columns:1fr}
+    .way,.way + .way{padding:32px 0;border-left:none;border-bottom:1px solid var(--line)}
+    .download-grid{grid-template-columns:1fr}
+    .faq-grid{grid-template-columns:1fr;gap:28px}
+    .foot{grid-template-columns:1fr}
+  }
+  @media(max-width:760px){
+    section{padding:84px 0}
+    .wrap{padding:0 20px}
+    .nav-links a:not(.nav-cta):not(.nav-web){display:none}
+    .stage-wrap{padding:0 12px;margin-top:44px}
+    .stage{border-radius:16px}
+    .facts{grid-template-columns:1fr}
+    .fact,.fact + .fact{padding:24px 0;border-left:none;border-bottom:1px solid rgba(255,255,255,.18)}
+    .private .wrap{padding-top:100px;padding-bottom:72px}
+    .web-card{grid-template-columns:1fr}
+    .web-card .thumb{display:none}
+    .details{grid-template-columns:1fr}
+    .shot-frame{padding:14px}
+  }
+  @media(max-width:520px){
+    .nav-in{height:58px;gap:10px}
+    .brand img{height:22px}
+    .nav-links .nav-web{display:none}
+    .nav-links .nav-cta{padding:8px 12px;font-size:14px}
+    .hero{padding-top:44px}
+    .badge{font-size:12.5px;padding:4px 12px 4px 5px;gap:8px}
+    .badge .pill-new{font-size:11.5px}
+    h1{font-size:42px;line-height:1;letter-spacing:-.04em;margin-top:22px}
+    .desktop-tail{display:block}
+    .sub{font-size:16.5px;margin-top:18px}
+    .cta-row .btn{width:100%}
+    .uses,.shapes{grid-template-columns:1fr}
+    .caption{font-size:3cqw;max-width:86%}
+  }
+  @media(prefers-reduced-motion:reduce){
+    *,*::before,*::after{transition-duration:.01ms!important;animation-duration:.01ms!important;scroll-behavior:auto!important}
+  }
+</style>
+</head>
+<body>
+
+<header class="nav" id="nav">
+  <div class="wrap nav-in">
+    <a class="brand" href="#top" aria-label="Slipstream home"><img src="assets/brand/slipstream-logo.svg" alt="Slipstream" width="152" height="26"></a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="#features">Features</a>
+      <a href="#private">Privacy</a>
+      <a href="#compare">Compare</a>
+      <a href="#faq">FAQ</a>
+      <a class="nav-web" href="app/">Open web app</a>
+      <a class="nav-cta btn btn-primary" href="#download">Downloads</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+  <section class="hero" style="padding-bottom:0">
+    <div class="wrap">
+      <a class="badge" href="app/"><span class="pill-new"><i></i>New</span><span><b>Slipstream Web</b> puts the whole editor in a browser tab</span></a>
+      <h1>Polished screen recordings, straight<span class="desktop-tail"> from your desktop.</span></h1>
+      <p class="sub">Hit stop and it’s already edited. Zooms follow your clicks, your camera sits in frame, every word is captioned and the dead air is gone. Nothing gets uploaded.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary" id="hero-dl" href="#download">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 20h14"/></svg>
+          <span>Download for free</span>
+        </a>
+        <a class="btn btn-ghost" href="app/">Open in your browser</a>
+      </div>
+      <p class="avail">Free on macOS, Windows and Linux, or <a href="app/">run it in Chrome</a> with no install.</p>
+    </div>
+
+    <div class="stage-wrap">
+      <div class="stage" id="hero-stage" data-layout="bubble" data-captions="studio" role="img"
+           aria-label="A finished Slipstream recording: the Slate writing app on a soft blue gradient, with the presenter in a round camera bubble. The view zooms in when the cursor opens the insert menu, and captions follow the narration.">
+        <img class="wall" src="assets/img/grad-tide.webp" alt="" fetchpriority="high">
+        <div class="rec">
+          <div class="zoom">
+            <img class="shot1" src="assets/img/screen-slate.webp" srcset="assets/img/screen-slate-1440.webp 1440w, assets/img/screen-slate.webp 2400w, assets/img/screen-slate-3840.webp 3840w" sizes="(min-width:1280px) 1571px, calc(127.5vw - 61px)" alt="">
+            <img class="shot2" src="assets/img/screen-slate-slash.webp" srcset="assets/img/screen-slate-slash-1440.webp 1440w, assets/img/screen-slate-slash.webp 2400w, assets/img/screen-slate-slash-3840.webp 3840w" sizes="(min-width:1280px) 1571px, calc(127.5vw - 61px)" alt="">
+            <div class="ripple"></div>
+            <svg class="cursor" viewBox="0 0 24 24"><path d="M5 2.5v17.2l4.6-4.4 3 6.6 2.8-1.3-3-6.4h6.4z" fill="#111" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"/></svg>
+          </div>
+        </div>
+        <div class="cam"><img src="assets/img/cam-noah.webp" alt=""></div>
+        <div class="caption" aria-hidden="true"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="features">
+    <div class="wrap">
+      <div class="head c">
+        <h2>Everything you’d fix in an editor is done when you stop.</h2>
+        <p class="lead">Slipstream records screen, camera and mic as separate tracks, then lays them out the way a good editor would. Nothing is baked in, so you can change any of it later.</p>
+      </div>
+
+      <div class="demo">
+        <div class="steps" role="tablist" aria-label="What Slipstream does automatically">
+          <button class="step" role="tab" aria-selected="true" aria-controls="demo-stage" data-mode="zoom">
+            <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5M11 8v6M8 11h6"/></svg>Zooms that follow you</h3>
+            <p>Clicks and typing get a smooth zoom that eases in, holds and lets go. Drag any zoom on the timeline to retime it.</p>
+          </button>
+          <button class="step" role="tab" aria-selected="false" aria-controls="demo-stage" data-mode="camera">
+            <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="5" width="13" height="14" rx="3"/><path d="m16 10 5-3v10l-5-3"/></svg>Your camera, framed</h3>
+            <p>A bubble in the corner, side by side, or full frame. Switch layouts at any point in the video.</p>
+          </button>
+          <button class="step" role="tab" aria-selected="false" aria-controls="demo-stage" data-mode="captions">
+            <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M7 15h4M13 15h4M7 11h10"/></svg>Captions on every word</h3>
+            <p>Transcribed on your device and timed to the word, set like film subtitles. Export SRT and VTT too.</p>
+          </button>
+          <button class="step" role="tab" aria-selected="false" aria-controls="demo-stage" data-mode="background">
+            <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m3 16 5-5 4 4 3-3 6 6"/><circle cx="16" cy="9" r="1.5"/></svg>A background that fits</h3>
+            <p>Soft gradients or a photo, with padding, rounded corners and a gentle shadow already applied.</p>
+          </button>
+          <button class="step" role="tab" aria-selected="false" aria-controls="demo-stage" data-mode="cuts">
+            <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12"/></svg>Dead air and ums, gone</h3>
+            <p>Long pauses are shortened and filler words are marked, so one click tightens the whole take.</p>
+          </button>
+        </div>
+        <div>
+          <div class="stage" id="demo-stage" role="tabpanel" data-layout="bubble" data-captions="studio" aria-label="Preview of the selected automatic edit">
+            <img class="wall" src="assets/img/grad-morning.webp" alt="" loading="lazy">
+            <img class="wall next" src="assets/img/grad-morning.webp" alt="" loading="lazy">
+            <div class="rec">
+              <div class="zoom">
+                <img class="shot1" src="assets/img/screen-slate.webp" srcset="assets/img/screen-slate-1440.webp 1440w, assets/img/screen-slate.webp 2400w, assets/img/screen-slate-3840.webp 3840w" sizes="(min-width:1081px) 920px, calc(127.5vw - 61px)" alt="" loading="lazy">
+                <img class="shot2" src="assets/img/screen-slate-slash.webp" srcset="assets/img/screen-slate-slash-1440.webp 1440w, assets/img/screen-slate-slash.webp 2400w, assets/img/screen-slate-slash-3840.webp 3840w" sizes="(min-width:1081px) 920px, calc(127.5vw - 61px)" alt="" loading="lazy">
+                <div class="ripple"></div>
+                <svg class="cursor" viewBox="0 0 24 24"><path d="M5 2.5v17.2l4.6-4.4 3 6.6 2.8-1.3-3-6.4h6.4z" fill="#111" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"/></svg>
+              </div>
+            </div>
+            <div class="cam"><img src="assets/img/cam-maya.webp" alt="" loading="lazy"></div>
+            <div class="caption" aria-hidden="true"></div>
+            <div class="tx" aria-hidden="true">
+              <div class="tx-head"><span>Transcript</span><em>7 s tightened</em></div>
+              <p><span class="t">00:04</span><s>So, um,</s> this is the launch plan. <span class="pause">1.8 s</span> Hit plus <s>like</s> to add a block.</p>
+              <p style="margin-top:.8cqw"><span class="t">00:12</span>Pick a table, <s>you know,</s> or a template, and keep writing. <span class="pause">2.4 s</span></p>
+            </div>
+          </div>
+          <div class="picker" id="walls" hidden aria-label="Background">
+            <button class="swatch" aria-pressed="true" aria-label="Morning gradient" data-wall="assets/img/grad-morning.webp" style="background-image:url(assets/img/grad-morning.webp)"></button>
+            <button class="swatch" aria-pressed="false" aria-label="Tide gradient" data-wall="assets/img/grad-tide.webp" style="background-image:url(assets/img/grad-tide.webp)"></button>
+            <button class="swatch" aria-pressed="false" aria-label="Sage gradient" data-wall="assets/img/grad-sage.webp" style="background-image:url(assets/img/grad-sage.webp)"></button>
+            <button class="swatch" aria-pressed="false" aria-label="Sand gradient" data-wall="assets/img/grad-sand.webp" style="background-image:url(assets/img/grad-sand.webp)"></button>
+            <button class="swatch" aria-pressed="false" aria-label="Dusk gradient" data-wall="assets/img/grad-dusk.webp" style="background-image:url(assets/img/grad-dusk.webp)"></button>
+            <button class="swatch" aria-pressed="false" aria-label="Graphite gradient" data-wall="assets/img/grad-graphite.webp" style="background-image:url(assets/img/grad-graphite.webp)"></button>
+            <button class="swatch" aria-pressed="false" aria-label="Valley photo" data-wall="assets/img/wall-valley.webp" style="background-image:url(assets/img/wall-valley.webp)"></button>
+            <button class="swatch" aria-pressed="false" aria-label="Peaks photo" data-wall="assets/img/wall-peaks.webp" style="background-image:url(assets/img/wall-peaks.webp)"></button>
+          </div>
+          <div class="picker" id="capstyles" hidden aria-label="Caption style">
+            <button class="chip" aria-pressed="true" data-cap="studio">Studio</button>
+            <button class="chip" aria-pressed="false" data-cap="cinema">Cinema</button>
+            <button class="chip serif" aria-pressed="false" data-cap="editorial">Editorial</button>
+            <button class="chip heavy" aria-pressed="false" data-cap="bold">Bold</button>
+          </div>
+          <div class="picker" id="layouts" hidden aria-label="Camera layout">
+            <button class="chip" aria-pressed="false" data-layout="bubble">Bubble</button>
+            <button class="chip" aria-pressed="true" data-layout="split">Side by side</button>
+            <button class="chip" aria-pressed="false" data-layout="screen">Screen only</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section style="background:var(--mist);border-top:1px solid var(--line);border-bottom:1px solid var(--line)">
+    <div class="wrap split">
+      <div>
+        <h2>Fix it like a document.</h2>
+        <p class="lead">The transcript is the timeline. Delete a sentence and the video follows. Every cut can be restored, and nothing touches your original files.</p>
+        <ul class="ticks">
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 4.5 4.5L19 7"/></svg><span><b>Remove fillers in one click.</b> Ums and uhs are marked as you record, ready to strip.</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 4.5 4.5L19 7"/></svg><span><b>Find and cut.</b> Search for a word you overuse and cut every instance at once.</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 4.5 4.5L19 7"/></svg><span><b>Fix a word, fix the caption.</b> Double-click to correct a word and the subtitles update.</span></li>
+        </ul>
+      </div>
+      <div class="shot-frame">
+        <div class="shot"><img src="assets/img/editor.webp" alt="The Slipstream editor: transcript with cut filler words on the left, the composed video in the middle with a camera bubble and captions, and style controls on the right, above a timeline with zoom and caption lanes." loading="lazy" width="2400" height="1500"></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="head">
+        <h2>One take. Every shape.</h2>
+        <p class="lead">Switch from widescreen to vertical and Slipstream reframes the shot around your zooms and your face. Captions resize to match.</p>
+      </div>
+      <div class="shapes">
+        <figure class="shape shape-169">
+          <div class="frame f169">
+            <img class="bg" src="assets/img/grad-dusk.webp" alt="" loading="lazy">
+            <div class="win"><img src="assets/img/screen-slate-dark.webp" alt="" loading="lazy"></div>
+            <div class="bub"><img src="assets/img/cam-leo.webp" alt="" loading="lazy"></div>
+            <div class="cc">The outline follows every heading as you write.</div>
+          </div>
+          <figcaption><b>16:9</b>YouTube, docs and product pages</figcaption>
+        </figure>
+        <figure class="shape">
+          <div class="frame f916">
+            <div class="portrait"><img src="assets/img/reel-maya.webp" alt="" loading="lazy"></div>
+            <div class="mini"><img src="assets/img/screen-slate-palette.webp" alt="" loading="lazy"></div>
+            <div class="cc">Find anything with <em>one</em> shortcut</div>
+          </div>
+          <figcaption><b>9:16</b>Reels, Shorts and TikTok</figcaption>
+        </figure>
+        <figure class="shape">
+          <div class="frame f11">
+            <img class="bg" src="assets/img/grad-sand.webp" alt="" loading="lazy">
+            <div class="top"><img src="assets/img/screen-slate-slash-crop.webp" alt="" loading="lazy"></div>
+            <div class="bot"><img src="assets/img/cam-sam.webp" alt="" loading="lazy"><span>Write first, format later.</span></div>
+          </div>
+          <figcaption><b>1:1 and 4:5</b>LinkedIn, X and feeds</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <section style="padding-top:0">
+    <div class="wrap">
+      <div class="head">
+        <h2>Made for people who explain things.</h2>
+        <p class="lead">If you show your screen to teach, sell or ship, Slipstream takes the editing off your plate.</p>
+      </div>
+      <div class="uses">
+        <article class="use"><div class="ph"><img src="assets/img/use-demo.webp" alt="A man at his desk in an open-plan office with his laptop open" loading="lazy"></div>
+          <h3>Product demos</h3><p>Walk through a feature once. Zooms land on every click so viewers never squint.</p></article>
+        <article class="use"><div class="ph"><img src="assets/img/use-code.webp" alt="A learner on a video lesson at a desk with a large monitor" loading="lazy"></div>
+          <h3>Tutorials and courses</h3><p>Record long lessons, then cut by transcript and export chapters for YouTube.</p></article>
+        <article class="use"><div class="ph"><img src="assets/img/use-mic.webp" alt="A broadcast microphone on a boom arm" loading="lazy"></div>
+          <h3>Talking-head clips</h3><p>Turn a long take into vertical clips with clean captions and your face in frame.</p></article>
+        <article class="use"><div class="ph"><img src="assets/img/use-call.webp" alt="A man in headphones laughing at his desk by a bright window" loading="lazy"></div>
+          <h3>Team updates</h3><p>Skip the meeting. Record a two-minute update that’s easy to watch and quick to share.</p></article>
+      </div>
+
+      <div class="details">
+        <div class="detail"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.2 5.3L20 9l-4.4 3.8L17 18.5 12 15.6 7 18.5l1.4-5.7L4 9l5.8-.7z"/></svg>
+          <h3>Find the best clips</h3><p>Slipstream scores what you say, how lively you sound and what happens on screen, explains each pick, and exports the top ones as reels in one go.</p></div>
+        <div class="detail"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h10M4 18h7"/></svg>
+          <h3>Titles and chapters</h3><p>Drafts a title, description and YouTube chapters from what you said, using an on-device model where available.</p></div>
+        <div class="detail"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v5M16 4v5"/></svg>
+          <h3>Hand off to your editor</h3><p>Send the cut to Final Cut Pro, Premiere or Resolve as FCPXML, XML or EDL with the original media linked. On desktop and in the browser.</p></div>
+        <div class="detail"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17V7l8 5-8 5zM12 17V7l8 5-8 5z"/></svg>
+          <h3>4K at 60 fps</h3><p>Hardware-accelerated export on Apple silicon, NVIDIA and Intel. MP4 or WebM in the browser.</p></div>
+        <div class="detail"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>
+          <h3>Separate tracks</h3><p>Screen, camera and mic are recorded apart, so you can fix one without touching the others.</p></div>
+        <div class="detail"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="13" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 15h10"/></svg>
+          <h3>Keyboard first</h3><p>Cut, zoom, split and undo without leaving the keys. Every shortcut is listed in the app.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="private" id="private">
+    <div class="bgph" aria-hidden="true"></div>
+    <div class="wrap">
+      <h2>Your recordings never leave your computer.</h2>
+      <p class="lead">Cloud editors upload first and edit later. Slipstream records, transcribes, edits and exports on your own machine, so there’s nothing to upload, leak or lose access to.</p>
+      <div class="facts">
+        <div class="fact"><h3>Speech-to-text runs locally</h3><p>Whisper runs on your CPU or GPU. Your voice is never sent to a server.</p></div>
+        <div class="fact"><h3>No account, no watermark</h3><p>Open it and record. There’s no sign-up, no usage cap and no logo stamped on your video.</p></div>
+        <div class="fact"><h3>Projects are yours</h3><p>Footage stays in your folders, or in your browser’s storage on the web. A .slipstream file moves a project between computers without any cloud.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="ways">
+    <div class="wrap">
+      <div class="head">
+        <h2>Native when you want power. A tab when you don’t.</h2>
+        <p class="lead">The same edit runs everywhere: transcript cuts, zooms, layouts and captions.</p>
+      </div>
+      <div class="ways">
+        <div class="way">
+          <div class="vis"><img class="icon" src="assets/brand/app-icon-256.png" alt="" width="96" height="96"></div>
+          <h3>Desktop app</h3>
+          <p>A Swift app on macOS, and a Rust-powered app on Windows and Linux, with hardware encoding.</p>
+          <ul><li>Auto-zoom from your cursor and clicks</li><li>Hardware export with NVENC, Quick Sync and VideoToolbox</li><li>Final Cut, Premiere and Resolve handoff</li></ul>
+          <a class="btn btn-ghost" href="#download">Download</a>
+        </div>
+        <div class="way">
+          <div class="vis"><div class="browser"><div class="bar"><i></i><i></i><i></i><span>slipstream/app</span></div><img src="assets/img/editor.webp" alt="" loading="lazy"></div></div>
+          <h3>In your browser</h3>
+          <p>The full editor in a Chrome tab. Whisper runs on WebGPU and export uses WebCodecs. Nothing to install.</p>
+          <ul><li>Record screen, camera and mic in the tab</li><li>A copilot that edits on request, on-device</li><li>MP4, WebM, SRT, VTT and editor handoff out</li></ul>
+          <a class="btn btn-primary" href="app/">Open web app</a>
+        </div>
+        <div class="way">
+          <div class="vis"><div class="term"><b>$ slipstream_engine</b> transcribe demo.mov<br><i>✓</i> 412 words, 3 fillers<br><b>$ slipstream_engine</b> render --plan cut.json<br><i>✓</i> demo-916.mp4 (0:48)</div></div>
+          <h3>Engine and agents</h3>
+          <p>The render engine is a command-line tool. Script batches, or let an AI agent drive the edit.</p>
+          <ul><li>JSON edit plans with a published schema</li><li>Headless render and dry runs</li><li>Local MCP server for Claude Code and Cursor</li></ul>
+          <a class="btn btn-ghost" href="https://github.com/tanzir71/slipstream-releases">View on GitHub</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="compare" style="padding-top:40px">
+    <div class="wrap">
+      <div class="head">
+        <h2>Recorder, editor and clip tool in one.</h2>
+        <p class="lead">Most tools own one slice: a recorder, a transcript editor or a cloud repurposer. Slipstream covers capture, edit, captions and export on your own machine.</p>
+      </div>
+      <div class="matrix-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Tool</th><th>Edits&nbsp;on-device</th><th>Browser&nbsp;version</th><th>Desktop&nbsp;app</th><th>Built-in&nbsp;recorder</th>
+              <th>Auto&nbsp;zoom</th><th>Edit&nbsp;by&nbsp;transcript</th><th>Captions</th><th>Price</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="us-row">
+              <td class="tool">Slipstream<small>Recorder and editor</small></td>
+              <td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Mac, Windows, Linux</td><td class="yes">Yes</td>
+              <td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Free</td>
+            </tr>
+            <tr>
+              <td class="tool">Screen&nbsp;Studio<small>Mac screen recorder</small></td>
+              <td class="yes">Yes</td><td class="no">No</td><td class="part">macOS only</td><td class="yes">Yes</td>
+              <td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="no">$9/mo yearly, $29 monthly</td>
+            </tr>
+            <tr>
+              <td class="tool">Cap<small>Open-source recorder</small></td>
+              <td class="part">Local and cloud links</td><td class="part">Chrome extension</td><td class="yes">Mac, Windows, Linux</td><td class="yes">Yes</td>
+              <td class="yes">Yes</td><td class="yes">Yes (since 0.6.3)</td><td class="yes">Yes</td><td class="part">Free, Pro $12/mo</td>
+            </tr>
+            <tr>
+              <td class="tool">Descript<small>AI video and podcast editor</small></td>
+              <td class="no">Cloud</td><td class="yes">Yes</td><td class="yes">Mac, Windows</td><td class="yes">Yes</td>
+              <td class="no">No</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="no">Free tier, then from $16/mo</td>
+            </tr>
+            <tr>
+              <td class="tool">Riverside<small>Remote recording studio</small></td>
+              <td class="part">Records locally</td><td class="yes">Yes</td><td class="part">Mac</td><td class="yes">Yes</td>
+              <td class="no">No</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="no">Free tier, then from $24/mo</td>
+            </tr>
+            <tr>
+              <td class="tool">Recordly&nbsp;/&nbsp;OpenScreen<small>Open-source recorders</small></td>
+              <td class="yes">Yes</td><td class="no">No</td><td class="yes">Mac, Windows, Linux</td><td class="yes">Yes</td>
+              <td class="yes">Yes</td><td class="part">OpenScreen 2</td><td class="yes">Yes</td><td class="yes">Free</td>
+            </tr>
+            <tr>
+              <td class="tool">Rescript<small>Open-source transcript editor</small></td>
+              <td class="yes">Yes</td><td class="yes">Yes</td><td class="part">Desktop build</td><td class="no">No</td>
+              <td class="no">No</td><td class="yes">Yes</td><td class="no">No</td><td class="yes">Free</td>
+            </tr>
+            <tr>
+              <td class="tool">OpusClip<small>Long-to-short repurposer</small></td>
+              <td class="no">Cloud</td><td class="yes">Yes</td><td class="no">No</td><td class="no">No</td>
+              <td class="part">Reframe</td><td class="part">Auto-clip</td><td class="yes">Yes</td><td class="no">Free tier, paid plans</td>
+            </tr>
+            <tr>
+              <td class="tool">CapCut<small>Template video editor</small></td>
+              <td class="no">Cloud</td><td class="yes">Yes</td><td class="yes">Mac, Windows</td><td class="part">Partial</td>
+              <td class="part">Partial</td><td class="part">Partial</td><td class="yes">Yes</td><td class="no">Pro $19.99/mo</td>
+            </tr>
+            <tr>
+              <td class="tool">Eddie&nbsp;AI<small>Agentic rough-cut editor</small></td>
+              <td class="no">Cloud</td><td class="yes">Yes</td><td class="yes">Mac, Windows</td><td class="no">No</td>
+              <td class="no">No</td><td class="yes">Chat-driven</td><td class="yes">Yes</td><td class="no">Credits from $10</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="note">Based on each vendor’s public pages as of November 2026. Features and prices change, so check the vendor’s site before deciding. “Edits on-device” means editing and AI run without uploading your footage.</p>
+    </div>
+  </section>
+
+  <section id="download">
+    <div class="wrap">
+      <div class="final">
+        <img class="app-icon" src="assets/brand/app-icon-256.png" alt="" width="104" height="104">
+        <h2>Download Slipstream</h2>
+        <p>Free on every desktop, with no account and no watermark. Prefer not to install anything? Open Slipstream Web instead.</p>
+        <div class="download-grid">
+          <article class="download-card">
+            <div class="download-copy">
+              <svg class="os" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.5 10.4 4.5v7H3zM11.4 4.4 21 3v8.5h-9.6zM3 12.5h7.4v7L3 18.5zM11.4 12.5H21V21l-9.6-1.4z"/></svg>
+              <h3>Windows</h3>
+              <p>x64 installer for Windows 10 and 11.</p>
+            </div>
+            <div class="download-actions">
+              <a class="btn btn-primary" href="download/slipstream-windows-x64-setup.exe" data-asset="slipstream-windows-x64-setup.exe">Download .exe</a>
+              <a class="download-link" href="download/slipstream-windows-x64.msi" data-asset="slipstream-windows-x64.msi">MSI</a>
+              <a class="download-link" href="download/slipstream-windows-sha256.txt">SHA-256</a>
+            </div>
+            <div class="download-meta">Use setup.exe for most PCs and the MSI for managed installs.</div>
+          </article>
+          <article class="download-card">
+            <div class="download-copy">
+              <svg class="os" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16.4 12.6c0-2.5 2-3.6 2.1-3.7-1.2-1.7-3-1.9-3.6-2-1.5-.2-3 .9-3.7.9-.8 0-2-.9-3.2-.8-1.7 0-3.2 1-4 2.4-1.7 3-.4 7.4 1.2 9.8.8 1.2 1.8 2.5 3 2.4 1.2 0 1.7-.8 3.1-.8 1.5 0 1.9.8 3.2.8 1.3 0 2.1-1.2 2.9-2.4.9-1.4 1.3-2.7 1.3-2.8 0 0-2.4-1-2.3-3.8zM14.1 5.2c.7-.8 1.1-1.9 1-3-1 0-2.1.6-2.8 1.4-.6.7-1.2 1.8-1 2.9 1 .1 2.1-.5 2.8-1.3z"/></svg>
+              <h3>macOS</h3>
+              <p>Native app for Apple silicon Macs.</p>
+            </div>
+            <div class="download-actions">
+              <a class="btn btn-primary" href="download/slipstream-macos.dmg" data-asset="slipstream-macos.dmg" id="dl">Download .dmg</a>
+              <a class="download-link" href="download/slipstream-macos.zip" data-asset="slipstream-macos.zip">ZIP</a>
+              <a class="download-link" href="download/slipstream-macos-sha256.txt">SHA-256</a>
+            </div>
+            <div class="download-meta">Requires macOS 26 or later.</div>
+          </article>
+          <article class="download-card">
+            <div class="download-copy">
+              <svg class="os" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.5c-2.2 0-3.4 1.8-3.4 4.4 0 1.7-.4 2.6-1.4 4-1.3 1.8-2.6 3.8-2.4 6.2.2 1.6 1.5 2.4 3 2.7 1.3.3 2.4 1.7 4.2 1.7s2.9-1.4 4.2-1.7c1.5-.3 2.8-1.1 3-2.7.2-2.4-1.1-4.4-2.4-6.2-1-1.4-1.4-2.3-1.4-4 0-2.6-1.2-4.4-3.4-4.4z"/><circle cx="10.6" cy="7.6" r=".6" fill="currentColor"/><circle cx="13.4" cy="7.6" r=".6" fill="currentColor"/><path d="M11 9.6h2l-1 1z" fill="currentColor"/></svg>
+              <h3>Linux</h3>
+              <p>x64 AppImage and Debian package.</p>
+            </div>
+            <div class="download-actions">
+              <a class="btn btn-primary" href="download/slipstream-linux-x64.AppImage" data-asset="slipstream-linux-x64.AppImage">Download AppImage</a>
+              <a class="download-link" href="download/slipstream-linux-x64.deb" data-asset="slipstream-linux-x64.deb">DEB</a>
+              <a class="download-link" href="download/slipstream-linux-sha256.txt">SHA-256</a>
+            </div>
+            <div class="download-meta">AppImage runs anywhere. Use the DEB on Debian and Ubuntu.</div>
+          </article>
+        </div>
+        <a class="web-card" href="app/">
+          <span class="thumb"><img src="assets/img/editor.webp" alt="" loading="lazy"></span>
+          <div><h3>Slipstream Web, no install</h3><p>Works in Chrome, Edge, Arc and Brave 120 or later. Records, transcribes and exports inside the tab, and your projects stay in that browser.</p></div>
+          <span class="btn btn-primary">Open web app</span>
+        </a>
+        <div class="cta-row">
+          <a class="btn btn-ghost" href="https://github.com/tanzir71/slipstream-releases">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2a10 10 0 0 0-3.2 19.5c.5.1.7-.2.7-.5v-1.7c-2.8.6-3.4-1.3-3.4-1.3-.5-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 .1 1.5 1 1.5 1 .9 1.5 2.4 1.1 3 .8.1-.7.4-1.1.6-1.3-2.2-.3-4.6-1.1-4.6-5 0-1.1.4-2 1-2.7-.1-.3-.4-1.3.1-2.7 0 0 .8-.3 2.8 1a9.6 9.6 0 0 1 5 0c1.9-1.3 2.8-1 2.8-1 .5 1.4.2 2.4.1 2.7.6.7 1 1.6 1 2.7 0 3.9-2.4 4.7-4.6 5 .4.3.7.9.7 1.9V21c0 .3.2.6.7.5A10 10 0 0 0 12 2z"/></svg>
+            View on GitHub</a>
+        </div>
+        <p class="reassure">Your footage never leaves your machine.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="faq">
+    <div class="wrap faq-grid">
+      <div class="head"><h2>Questions</h2><p class="lead">Something missing? Open an issue on <a href="https://github.com/tanzir71/slipstream-releases" style="text-decoration:underline;text-underline-offset:3px">GitHub</a>.</p></div>
+      <div class="faq">
+        <details open><summary>Is it really free?</summary><p>Yes. The desktop apps and Slipstream Web are free, with no account, no watermark and no usage caps.</p></details>
+        <details><summary>Does my video get uploaded anywhere?</summary><p>No. Recording, transcription, editing and export all happen on your computer. The desktop apps have no servers to send footage to. Slipstream Web keeps projects in your browser’s storage and renders with WebCodecs.</p></details>
+        <details><summary>What does the web app download?</summary><p>Only code and the speech model. The first time you transcribe, it fetches the transcription library and a Whisper model (about 40 to 250 MB, depending on the quality you pick) from public CDNs. Your browser caches them and your audio is processed locally. You can also import an SRT or VTT file instead.</p></details>
+        <details><summary>Which browsers work for Slipstream Web?</summary><p>Desktop Chrome, Edge, Arc, Brave and other Chromium browsers (version 120 or later) support everything: recording, WebGPU transcription and MP4 export. Safari and Firefox support is partial while their WebCodecs support catches up, so use the desktop app there.</p></details>
+        <details><summary>The Mac app says it “can’t be opened” on first launch. Why?</summary><p>Slipstream is free and isn’t notarized (that needs Apple’s paid developer program), so macOS asks once for apps downloaded in a browser. Open it once, then go to <b>System Settings → Privacy &amp; Security</b> and click <b>Open Anyway</b>. Or install from Terminal, which skips the prompt: <code>curl -fsSL https://raw.githubusercontent.com/tanzir71/slipstream-releases/main/install.sh | bash</code> (it checks the download’s SHA-256 and signature first).</p></details>
+        <details><summary>What do I need to run the desktop app?</summary><p>Windows 10 or 11 (x64), an Apple silicon Mac with macOS 26 or later, or Linux x64 via AppImage or DEB. Camera effects like Center Stage and Portrait need supported Mac camera hardware and are captured automatically by the macOS build.</p></details>
+        <details><summary>How is this different from Screen Studio, Descript or OpusClip?</summary><p>Each of those owns one slice: a Mac-only recorder, a cloud transcript editor, or a cloud repurposer. Slipstream does capture, transcript editing, zoom, camera layouts, captions and export in one local-first app, on every desktop OS and in the browser. See the comparison above.</p></details>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <div>
+      <img src="assets/brand/slipstream-logo.svg" alt="Slipstream" width="141" height="24">
+      <div>Free screen recorder and editor for desktop and the web.</div>
+      <div style="margin-top:6px">built by <a href="https://tanziro.com/">tanziro.com</a> &middot; <a href="https://buymeacoffee.com/tanzir">buy me a coffee</a></div>
+    </div>
+    <div class="links"><a href="https://github.com/tanzir71/slipstream-releases">GitHub</a><a href="app/">Web app</a><a href="#download">Download</a><a href="#compare">Compare</a><a href="#faq">FAQ</a><a href="privacy.html">Privacy</a><a href="third-party.html">Third-party licences</a></div>
+    <div class="credits">Photography from <a href="https://unsplash.com/">Unsplash</a>, used under the <a href="https://unsplash.com/license">Unsplash License</a>. Sample screens show Slate, a Markdown writing app.</div>
+  </div>
+</footer>
+
+<script>
+(() => {
+  const nav = document.getElementById('nav');
+  const onScroll = () => nav.classList.toggle('scrolled', scrollY > 8);
+  addEventListener('scroll', onScroll, { passive: true }); onScroll();
+
+  // Point the hero download at the visitor's OS.
+  const ua = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || navigator.userAgent;
+  const os = /mac/i.test(ua) ? ['macOS', 'download/slipstream-macos.dmg']
+    : /win/i.test(ua) ? ['Windows', 'download/slipstream-windows-x64-setup.exe']
+    : (/linux|x11/i.test(ua) && !/android/i.test(navigator.userAgent)) ? ['Linux', 'download/slipstream-linux-x64.AppImage'] : null;
+  if (os) { const b = document.getElementById('hero-dl'); b.href = os[1]; b.querySelector('span').textContent = 'Download for ' + os[0]; }
+
+  // Once the GitHub release is live (download/latest.json says "published": true), installer links point at it.
+  // Same-origin manifest only; links keep their relative fallbacks otherwise.
+  fetch('download/latest.json', { cache: 'no-cache' }).then((r) => (r.ok ? r.json() : null)).then((m) => {
+    if (!m || m.published !== true) return;
+    const urls = {};
+    for (const list of Object.values(m.assets || {})) for (const a of list) if (String(a.url).startsWith('https://github.com/tanzir71/slipstream-releases/releases/download/')) urls[a.name] = a.url;
+    document.querySelectorAll('a[data-asset]').forEach((a) => { if (urls[a.dataset.asset]) a.href = urls[a.dataset.asset]; });
+    const hero = document.getElementById('hero-dl');
+    const file = hero && (hero.getAttribute('href') || '').replace(/^download\//, '');
+    if (file && urls[file]) hero.href = urls[file];
+  }).catch(() => {});
+
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const ease = (x) => x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x);
+  const lerp = (a, b, t) => a + (b - a) * t;
+
+  // Plays a scripted "recording": cursor path, click, eased zoom and word-timed captions.
+  function Stage(el, script) {
+    const zoom = el.querySelector('.zoom'), cur = el.querySelector('.cursor'), rip = el.querySelector('.ripple');
+    const shot2 = el.querySelector('.shot2'), cap = el.querySelector('.caption');
+    const words = script.words;
+    let lineStart = -1, spans = [], t0 = performance.now(), raf = 0, running = false;
+    const opts = { zoom: true };
+    function setLine(i) {
+      const line = script.lines.find(l => i >= l[0] && i < l[1]);
+      if (!line || line[0] === lineStart) return line;
+      lineStart = line[0];
+      cap.replaceChildren(...words.slice(line[0], line[1]).map(w => { const s = document.createElement('span'); s.textContent = w[0] + ' '; return s; }));
+      spans = [...cap.children];
+      return line;
+    }
+    function frame(now) {
+      const t = reduce ? script.still : ((now - t0) / 1000) % script.loop;
+      const k = script.path; let p = k[k.length - 1];
+      for (let i = 1; i < k.length; i++) if (t <= k[i][0]) { const a = k[i - 1], b = k[i], u = ease((t - a[0]) / (b[0] - a[0])); p = [t, lerp(a[1], b[1], u), lerp(a[2], b[2], u)]; break; }
+      cur.style.left = p[1] + '%'; cur.style.top = p[2] + '%';
+      const c = script.click, dt = t - c.t;
+      if (dt >= 0 && dt < .6) { rip.style.left = c.x + '%'; rip.style.top = c.y + '%'; rip.style.opacity = String(1 - dt / .6); rip.style.transform = `translate(-50%,-50%) scale(${.3 + dt * 1.6})`; }
+      else rip.style.opacity = '0';
+      shot2.style.opacity = (t > c.t + .05 && t < script.popEnd) ? '1' : '0';
+      const z = script.zoomAt; let s = 1;
+      if (opts.zoom) {
+        if (t >= z.in && t < z.in + z.ramp) s = lerp(1, z.scale, ease((t - z.in) / z.ramp));
+        else if (t >= z.in + z.ramp && t < z.out) s = z.scale;
+        else if (t >= z.out && t < z.out + z.ramp) s = lerp(z.scale, 1, ease((t - z.out) / z.ramp));
+      }
+      zoom.style.transform = `translate(${-(z.x / 100) * (s - 1) * 100}%,${-(z.y / 100) * (s - 1) * 100}%) scale(${s})`;
+      let wi = words.findIndex(w => t >= w[1] && t < w[2]);
+      if (wi < 0) wi = Math.max(0, words.findIndex(w => w[1] > t) - 1);
+      const line = setLine(wi);
+      if (line) spans.forEach((s2, j) => { const idx = line[0] + j; s2.className = idx < wi ? 'on' : idx === wi ? 'now' : ''; });
+      if (running && !reduce) raf = requestAnimationFrame(frame);
+    }
+    new IntersectionObserver((es) => es.forEach(e => {
+      if (e.isIntersecting && !running) { running = true; raf = requestAnimationFrame(frame); }
+      else if (!e.isIntersecting && running) { running = false; cancelAnimationFrame(raf); }
+    }), { threshold: .15 }).observe(el);
+    frame(performance.now());
+    return { set(o) { Object.assign(opts, o); frame(performance.now()); }, restart() { t0 = performance.now(); } };
+  }
+
+  const script = {
+    loop: 10.5, still: 4.2, popEnd: 7.9,
+    path: [[0, 30, 62], [0.5, 30, 62], [1.8, 42.4, 38.6], [2.9, 42.4, 38.6], [3.8, 51, 47.5], [7.4, 51, 47.5], [9, 36, 58], [10.5, 30, 62]],
+    click: { t: 1.95, x: 42.2, y: 38.1 },
+    zoomAt: { in: 2.2, ramp: .9, out: 6.9, scale: 1.5, x: 64, y: 70 },
+    words: [['Hit', .1, .3], ['plus,', .3, .7], ['or', .75, .9], ['type', .9, 1.15], ['a', 1.15, 1.25], ['slash,', 1.25, 1.75], ['and', 1.8, 1.95], ['insert', 1.95, 2.3], ['anything.', 2.3, 3.0],
+            ['A', 3.2, 3.3], ['table,', 3.3, 3.8], ['a', 3.85, 3.95], ['task', 3.95, 4.2], ['list', 4.2, 4.6], ['or', 4.65, 4.8], ['a', 4.8, 4.9], ['template.', 4.9, 5.7],
+            ['It', 6.0, 6.15], ['all', 6.15, 6.35], ['stays', 6.35, 6.7], ['plain', 6.7, 7.0], ['Markdown.', 7.0, 7.8], ['', 7.8, 10.5]],
+    lines: [[0, 9], [9, 17], [17, 23]],
+  };
+  Stage(document.getElementById('hero-stage'), script);
+
+  // Feature demo: each tab changes the composition; some tabs show their own picker.
+  const demoEl = document.getElementById('demo-stage');
+  const demo = Stage(demoEl, script);
+  const pickers = { walls: document.getElementById('walls'), capstyles: document.getElementById('capstyles'), layouts: document.getElementById('layouts') };
+  const modes = {
+    zoom:       { layout: 'bubble', tx: 'off', zoom: true },
+    camera:     { layout: 'split',  tx: 'off', zoom: false, picker: 'layouts' },
+    captions:   { layout: 'bubble', tx: 'off', zoom: false, picker: 'capstyles' },
+    background: { layout: 'screen', tx: 'off', zoom: false, picker: 'walls', captions: 'off' },
+    cuts:       { layout: 'screen', tx: 'on',  zoom: false, captions: 'off' },
+  };
+  let capStyle = 'studio';
+  const tabs = [...document.querySelectorAll('.step')];
+  function select(btn) {
+    tabs.forEach(b => b.setAttribute('aria-selected', String(b === btn)));
+    const m = modes[btn.dataset.mode];
+    demoEl.dataset.layout = m.layout; demoEl.dataset.tx = m.tx; demoEl.dataset.captions = m.captions || capStyle;
+    Object.entries(pickers).forEach(([k, el]) => el.hidden = k !== m.picker);
+    if (m.picker === 'layouts') pickers.layouts.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.layout === m.layout)));
+    demo.set({ zoom: m.zoom }); demo.restart();
+  }
+  tabs.forEach((b, i) => {
+    b.addEventListener('click', () => select(b));
+    b.addEventListener('keydown', (e) => {
+      const d = (e.key === 'ArrowDown' || e.key === 'ArrowRight') ? 1 : (e.key === 'ArrowUp' || e.key === 'ArrowLeft') ? -1 : 0;
+      if (d) { e.preventDefault(); const n = tabs[(i + d + tabs.length) % tabs.length]; n.focus(); select(n); }
+    });
+  });
+  const press = (group, btn) => group.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', String(x === btn)));
+  const [wallA, wallB] = demoEl.querySelectorAll('.wall');
+  let swapTimer;
+  pickers.walls.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+    press(pickers.walls, b); clearTimeout(swapTimer);
+    wallB.src = b.dataset.wall; wallB.classList.remove('next');
+    swapTimer = setTimeout(() => { wallA.src = b.dataset.wall; wallB.classList.add('next'); }, 760);
+  }));
+  pickers.capstyles.querySelectorAll('button').forEach(b => b.addEventListener('click', () => { press(pickers.capstyles, b); capStyle = b.dataset.cap; demoEl.dataset.captions = capStyle; }));
+  pickers.layouts.querySelectorAll('button').forEach(b => b.addEventListener('click', () => { press(pickers.layouts, b); demoEl.dataset.layout = b.dataset.layout; }));
+})();
+</script>
+</body>
+</html>
