@@ -1,6 +1,6 @@
 {
   "version": "2.0.1",
-  "published": false,
+  "published": true,
   "notes": "Slipstream 2.0.1: fixes Mac recordings quitting when they start, makes Mac takes crash-safe while the screen is still, and moves downloads and updates to tanzir71/slipstream-releases.",
   "pub_date": "2026-11-18T19:35:28Z",
   "repo": "tanzir71/slipstream-releases",
