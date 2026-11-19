@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://slipstream.tanziro.com/schema/edit-plan.v2.json",
   "title": "Slipstream edit plan v2",
-  "description": "One project format for Slipstream on macOS, Windows/Linux (Tauri + slipstream_engine) and the web. Times are seconds on the SOURCE timeline unless a field says otherwise. Fractions (padding, radius, sizes, margins) are relative to the output frame's short side. Fields marked x-surfaces are only rendered by those surfaces; every reader must keep fields it does not understand. Unknown top-level keys are allowed so newer writers don't break older readers.",
+  "description": "One project format for Slipstream on macOS, Windows/Linux (Tauri + slipstream_engine) and the web. Times are seconds on the SOURCE timeline unless a field says otherwise. Fractions (padding, radius, sizes, margins) are relative to the output frame's short side. Fields marked x-surfaces are only rendered by those surfaces; every reader must keep fields it does not understand. Unknown top-level keys are allowed so newer writers don't break older readers. In a multi-clip project (segments with `asset`, see sources.clips) there is no single source timeline: zooms, scenes, frameSections, masks, annotations, broll, chapters and brand.lowerThird use OUTPUT seconds, and cuts/range are not applied on top of the segments.",
   "type": "object",
   "required": [
     "version",
@@ -125,6 +125,13 @@
               }
             }
           }
+        },
+        "clips": {
+          "type": "array",
+          "description": "Assets of a multi-clip project (ticket AE-01): the footage that segments with `asset` play. In bundles each clip is media/clips/<id>.<ext>. sources.screen then describes the first clip so readers without clip support still find a recording.",
+          "items": {
+            "$ref": "#/$defs/clip"
+          }
         }
       }
     },
@@ -221,6 +228,17 @@
               }
             }
           }
+        },
+        "crop": {
+          "type": "array",
+          "description": "Source crop [x, y, w, h] as fractions of the source frame (top-left origin), applied before layout: the rest of the pipeline sees only this area. Set after an Area recording, or with the editor's Area crop. Zoom focus, masks, annotations and cursor samples stay in fractions of the whole source frame. The web edit keeps it at edit.frame.crop.",
+          "items": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "minItems": 4,
+          "maxItems": 4
         }
       }
     },
@@ -334,7 +352,8 @@
         "padding": {
           "type": "number",
           "minimum": 0,
-          "maximum": 0.2
+          "maximum": 0.2,
+          "description": "Background amount: the space around the recording as a fraction of the short side (presets: tight 0.04, balanced 0.07, roomy 0.12, spacious 0.18)."
         },
         "radius": {
           "type": "number",
@@ -370,6 +389,24 @@
             "tauri"
           ],
           "description": "Screen layer offset as a fraction of frame height (engine staging.offsetY)."
+        },
+        "frame": {
+          "enum": [
+            "background",
+            "full"
+          ],
+          "description": "On a background (padding, corners, shadow, wallpaper) or full screen (edge to edge: padding, radius and shadow 0). Missing = background (ticket E-01)."
+        },
+        "fit": {
+          "enum": [
+            "fill",
+            "fit"
+          ],
+          "description": "Full screen only: fill crops the recording to the output aspect (cover), fit letterboxes it on the wallpaper (contain). Default fill."
+        },
+        "followCursor": {
+          "type": "boolean",
+          "description": "Full screen with fill: the crop follows the cursor (cursor.samples, else the zoom focus) with the auto-zoom smoothing. Default true."
         }
       }
     },
@@ -874,9 +911,10 @@
       "type": "array",
       "x-surfaces": [
         "macos",
-        "tauri"
+        "tauri",
+        "web"
       ],
-      "description": "Flattened NLE clips (macOS 'Flatten cuts to clips', engine NleOp). start/end are OUTPUT timeline seconds, sourceIn is the source time at start. Optional; when present they take precedence over words/cuts.",
+      "description": "Output clips. start/end are OUTPUT timeline seconds, sourceIn is the source time at start (in the clip named by `asset`, else the screen recording). Optional; when present they take precedence over words/cuts/range. Without `asset`: flattened NLE clips of the screen recording (macOS 'Flatten cuts to clips', engine NleOp). With `asset`: a multi-clip project (ticket AE-01) whose segments play sources.clips in sequence; a source second lasts 1/speed output seconds.",
       "items": {
         "title": "Segment",
         "type": "object",
@@ -904,6 +942,74 @@
           },
           "track": {
             "type": "integer"
+          },
+          "asset": {
+            "type": "string",
+            "description": "Clip id from sources.clips."
+          },
+          "speed": {
+            "type": "number",
+            "minimum": 0.88,
+            "maximum": 1.12,
+            "description": "Playback rate (default 1). Auto edit retimes within 0.88-1.12; clips with kept speech stay at 1."
+          },
+          "crops": {
+            "type": "object",
+            "description": "Crop per output aspect, [x, y, w, h] as fractions of the source frame (Auto edit reframing, AE-06).",
+            "propertyNames": {
+              "enum": [
+                "16:9",
+                "9:16",
+                "1:1",
+                "4:5"
+              ]
+            },
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 4,
+              "maxItems": 4
+            }
+          },
+          "photoMotion": {
+            "anyOf": [
+              {
+                "title": "PhotoMotion",
+                "type": "object",
+                "properties": {
+                  "from": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "description": "Scale at the segment start."
+                  },
+                  "to": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "description": "Scale at the segment end."
+                  },
+                  "x": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
+                  },
+                  "y": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Photos only: slow push-in, e.g. { from: 1.0, to: 1.08 }."
+          },
+          "locked": {
+            "type": "boolean",
+            "description": "Set by any manual change; Auto edit re-solves around locked segments."
           }
         }
       }
@@ -924,6 +1030,208 @@
           "title": {
             "type": "string"
           }
+        }
+      }
+    },
+    "frameSections": {
+      "type": "array",
+      "description": "Layout track (ticket E-01): sections that switch between on background and full screen. Outside every section style.frame applies. At each section edge padding, radius and shadow ease with smootherstep over transition.dur seconds starting at the edge (the entered section's transition, or the left one's at its end); a cut switches on the frame. See packages/editor-core/src/frame.js.",
+      "items": {
+        "title": "FrameSection",
+        "type": "object",
+        "required": [
+          "start",
+          "end",
+          "frame"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "start": {
+            "type": "number",
+            "minimum": 0
+          },
+          "end": {
+            "type": "number",
+            "minimum": 0
+          },
+          "frame": {
+            "enum": [
+              "background",
+              "full"
+            ]
+          },
+          "transition": {
+            "title": "FrameTransition",
+            "type": "object",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "smooth",
+                  "cut"
+                ],
+                "description": "Default smooth."
+              },
+              "dur": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 3,
+                "description": "Seconds, default 0.6."
+              }
+            }
+          }
+        }
+      }
+    },
+    "autoEdit": {
+      "title": "AutoEdit",
+      "type": "object",
+      "description": "Auto edit settings and analysis (docs/handover/auto-edit.md), so tweaks and re-solves are stable. Readers that don't run Auto edit keep it as is.",
+      "properties": {
+        "match": {
+          "enum": [
+            "beat",
+            "motion",
+            "both"
+          ]
+        },
+        "length": {
+          "title": "AutoEditLength",
+          "type": "object",
+          "properties": {
+            "preset": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "'auto' (about a quarter of short footage), 'most' (Keep most: no target; readers also accept the older 'keep'), a length such as '30s', '1m', '5m', '10m', '20m', 'song' (with music: the whole song) or 'custom' (uses target). null reads as 'auto'."
+            },
+            "target": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "description": "Target output seconds (null for Keep most)."
+            }
+          }
+        },
+        "pace": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "order": {
+          "enum": [
+            "mine",
+            "energy"
+          ]
+        },
+        "cutFirst": {
+          "title": "AutoEditCutFirst",
+          "type": "object",
+          "properties": {
+            "pauses": {
+              "type": "boolean"
+            },
+            "retakes": {
+              "type": "boolean"
+            },
+            "idle": {
+              "type": "boolean"
+            },
+            "repeats": {
+              "type": "boolean"
+            }
+          }
+        },
+        "sentences": {
+          "type": "boolean",
+          "description": "Don't cut mid-sentence."
+        },
+        "keepClipSound": {
+          "type": "boolean"
+        },
+        "transitions": {
+          "title": "AutoEditTransitions",
+          "type": "object",
+          "properties": {
+            "punch": {
+              "type": "boolean"
+            },
+            "flash": {
+              "type": "boolean"
+            },
+            "sectionFade": {
+              "type": "boolean"
+            }
+          }
+        },
+        "seed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "music": {
+          "anyOf": [
+            {
+              "title": "AutoEditMusic",
+              "type": "object",
+              "properties": {
+                "bpm": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "beats": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                },
+                "downbeats": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                },
+                "sections": {
+                  "type": "array",
+                  "items": {
+                    "title": "MusicSection",
+                    "type": "object",
+                    "required": [
+                      "start",
+                      "end"
+                    ],
+                    "properties": {
+                      "start": {
+                        "type": "number"
+                      },
+                      "end": {
+                        "type": "number"
+                      },
+                      "label": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "confidence": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Beat analysis of edit.music (song seconds); null when the edit was cut without music."
+        },
+        "result": {
+          "type": "object",
+          "description": "Web: what the last Auto edit said about itself, for the tweak tools (why per segment, the Left out tray, the keep map). Readers may drop it; the segments are the edit."
         }
       }
     }
@@ -1050,6 +1358,10 @@
           "type": "number",
           "minimum": 0,
           "maximum": 1
+        },
+        "clip": {
+          "type": "string",
+          "description": "Clip id (sources.clips) the word belongs to, in a multi-clip project; start/end are then seconds in that clip."
         }
       }
     },
@@ -1171,6 +1483,71 @@
         },
         "text": {
           "type": "string"
+        }
+      }
+    },
+    "clip": {
+      "title": "Clip",
+      "type": "object",
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "media": {
+          "type": "string",
+          "description": "Where the surface keeps the file, e.g. the web media key `<project>:clip:<id>`."
+        },
+        "path": {
+          "type": "string",
+          "description": "Relative to the project bundle (media/clips/<id>.<ext>), or an absolute path on desktop."
+        },
+        "kind": {
+          "enum": [
+            "video",
+            "photo",
+            "audio"
+          ],
+          "description": "Defaults to video. Photos hold for their segment, optionally with photoMotion."
+        },
+        "name": {
+          "type": "string",
+          "description": "Original file name, for display."
+        },
+        "type": {
+          "type": "string",
+          "description": "MIME type."
+        },
+        "duration": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Seconds (video and audio)."
+        },
+        "width": {
+          "type": "integer"
+        },
+        "height": {
+          "type": "integer"
+        },
+        "fps": {
+          "type": "number"
+        },
+        "hasAudio": {
+          "type": "boolean"
+        },
+        "hasVideo": {
+          "type": "boolean"
+        },
+        "hash": {
+          "type": "string",
+          "description": "Content hash used to cache analysis, e.g. \"sha256:<hex>\"."
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$",
+          "description": "Hex SHA-256 of the file, checked when a bundle is opened."
         }
       }
     }

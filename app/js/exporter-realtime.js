@@ -5,7 +5,7 @@ import { renderFrame, usesCamera } from './compositor.js';
 import { speechIntervals, musicGainAt, musicSourceTime, musicSettings } from '../../packages/editor-core/src/music.js';
 import { loadWallpaper } from './wallpapers.js';
 import { ensureCaptionFonts } from './captions.js';
-import { totalDuration } from './edl.js';
+import { totalDuration, segmentSpeed, sequenceAudioPieces } from './edl.js';
 import { openVideo, closeVideo, seekTo } from './media-compat.js';
 import { layoutAt } from '../../packages/editor-core/src/scenes.js';
 import { camerasFor } from './exporter.js';
@@ -55,29 +55,59 @@ export async function exportRealtime(ctx, opts, { onProgress = () => {}, signal 
   Object.assign(canvas.style, { position: 'fixed', left: '-10000px', top: '0', width: '2px', height: '2px' });
   document.body.append(canvas);
   const g = canvas.getContext('2d', { alpha: false });
-  const screen = await openVideo(ctx.screenBlob);
+  // Multi-clip projects (AE-01): one <video> per clip, played segment by segment; no screen recording or camera.
+  const multi = Array.isArray(ctx.clips) && ctx.clips.length > 0;
+  const screen = multi ? null : await openVideo(ctx.screenBlob);
+  const clipEls = {}, clipBmps = {};
+  if (multi) {
+    for (const c of ctx.clips) {
+      if (!c.blob) continue;
+      if (c.kind === 'photo') clipBmps[c.id] = await createImageBitmap(c.blob).catch(() => null);
+      else clipEls[c.id] = await openVideo(c.blob);
+    }
+  }
   // Camera angles (S-03): one <video> per angle the edit shows; the active one follows the layout at t.
-  const angles = camerasFor(ctx);
+  const angles = multi ? [] : camerasFor(ctx);
   for (const a of angles) a.el = await openVideo(a.blob);
   const activeAngle = (t) => { const want = layoutAt(ctx.edit, t).angle || angles[0]?.id; return angles.find((a) => a.id === want) || angles[0] || null; };
   let camera = null;
   const stream = canvas.captureStream(fps);
   let ac = null, dest = null;
+  // Cuts (AE-09): the recorder pauses between pieces, so the two sides can't overlap as in the WebCodecs export's
+  // 80 ms crossfade. Instead the sound fades out over the last 40 ms of a piece and in over the first 40 ms of the
+  // next: the same 80 ms around the cut, as a dip rather than a mix, so joins never click.
+  let speechGain = null, speechLevel = 1;
+  const FADE = 0.04;
+  const fadeIn = () => {
+    if (!speechGain || !ac) return;
+    const g = speechGain.gain, now = ac.currentTime;
+    g.cancelScheduledValues(now); g.setValueAtTime(0, now); g.linearRampToValueAtTime(speechLevel, now + FADE);
+  };
+  const fadeOut = (left) => {
+    if (!speechGain || !ac) return;
+    const g = speechGain.gain, now = ac.currentTime;
+    g.cancelScheduledValues(now); g.setValueAtTime(g.value, now); g.linearRampToValueAtTime(0, now + Math.max(0.005, left));
+  };
   const wantsMusic = !!(ctx.musicBlob && ctx.edit.music);
   if (ctx.hasAudio || wantsMusic) {
     ac = ctx.audioContext || new (self.AudioContext || self.webkitAudioContext)();
     dest = ac.createMediaStreamDestination();
     if (ctx.hasAudio) {
-      screen.muted = false;
       const gain = ac.createGain();
-      gain.gain.value = Math.pow(10, (ctx.audioGainDb || 0) / 20); // loudness normalisation, same as the WebCodecs path
-      ac.createMediaElementSource(screen).connect(gain).connect(dest);
+      speechLevel = Math.pow(10, (ctx.audioGainDb || 0) / 20); // loudness normalisation, same as the WebCodecs path
+      // An Auto edit to music with "Keep clip sound" off plays the music alone (AE-09).
+      if (multi && ctx.edit.autoEdit && ctx.edit.music && ctx.edit.autoEdit.keepClipSound === false) speechLevel = 0;
+      gain.gain.value = speechLevel;
+      speechGain = gain;
+      gain.connect(dest);
+      const sources = multi ? ctx.clips.filter((c) => c.hasAudio && clipEls[c.id]).map((c) => clipEls[c.id]) : [screen];
+      for (const el of sources) { el.muted = false; ac.createMediaElementSource(el).connect(gain); }
     }
     for (const tr of dest.stream.getAudioTracks()) stream.addTrack(tr);
   }
   // Music bed (S-04): restarted at the right point of the song for each kept range, with the shared envelope.
   const song = wantsMusic && ac ? await ac.decodeAudioData(await ctx.musicBlob.arrayBuffer()).catch(() => null) : null;
-  const speech = song ? speechIntervals(ctx.edit.words, ctx.kept) : [];
+  const speech = song ? speechIntervals(ctx.speechWords || ctx.edit.words, ctx.kept) : [];
   const startMusic = (outT, len) => {
     if (!song || len <= 0) return null;
     const m = musicSettings(ctx.edit.music);
@@ -124,11 +154,20 @@ export async function exportRealtime(ctx, opts, { onProgress = () => {}, signal 
     }
     return out;
   };
+  // The piece of a multi-clip sequence being played: { s, a, b, el, bmp, wall0 } (a/b timeline seconds).
+  let cur = null;
+  const pieceTime = () => (cur.el ? cur.s.start + (cur.el.currentTime - cur.s.sourceIn) / segmentSpeed(cur.s) : cur.a + (performance.now() - cur.wall0) / 1000);
+  const drawSequence = () => {
+    if (!cur) return;
+    const t = Math.max(cur.a, Math.min(cur.b, pieceTime()));
+    renderFrame(g, W, H, { screen: cur.el || cur.bmp || null, camera: null, edit, t, cues: ctx.cues, cursor: ctx.cursor, overlays: brollVideos.length || Object.keys(brollImages).length ? { ...ctx.overlays, broll: brollFrame(t) } : ctx.overlays });
+  };
   const draw = () => {
+    if (multi) { drawSequence(); return; }
     const t = screen.currentTime;
     const a = activeAngle(t);
     camera = a && t >= (a.offset || 0) ? a.el : null;
-    renderFrame(g, W, H, { screen, camera, edit, t, cues: ctx.cues, overlays: brollVideos.length || Object.keys(brollImages).length ? { ...ctx.overlays, broll: brollFrame(t) } : ctx.overlays });
+    renderFrame(g, W, H, { screen, camera, edit, t, cues: ctx.cues, cursor: ctx.cursor, overlays: brollVideos.length || Object.keys(brollImages).length ? { ...ctx.overlays, broll: brollFrame(t) } : ctx.overlays });
   };
   let done = 0;
   const t0 = performance.now();
@@ -158,7 +197,61 @@ export async function exportRealtime(ctx, opts, { onProgress = () => {}, signal 
 
   try {
     if (ctx.intro) await playBumper(ctx.intro);
-    for (const r of ctx.kept) {
+    if (multi) {
+      // Each kept stretch of each segment plays from its clip at the segment's speed (the element keeps the pitch);
+      // photos hold for their length. A gap between segments holds the last frame in silence, as the fast exporter does.
+      const pieces = [];
+      let at = 0;
+      for (const p of sequenceAudioPieces(ctx.kept, ctx.edit.segments)) {
+        if (p.b - p.a <= 1e-3) continue;
+        if (p.o0 - at > 1e-3) pieces.push({ s: null, a: p.a - (p.o0 - at), b: p.a });
+        pieces.push({ s: p.s, a: p.a, b: p.b });
+        at = p.o1;
+      }
+      if (outDur - at > 1e-3 && pieces.length) { const end = pieces[pieces.length - 1].b; pieces.push({ s: null, a: end, b: end + (outDur - at) }); }
+      const blocked = 'The browser didn’t let the export play its audio. Click Export again (it needs a click to start sound).';
+      let hold = null;
+      for (const { s, a, b } of pieces) {
+        if (signal?.aborted) throw new DOMException('Export cancelled', 'AbortError');
+        const sp = segmentSpeed(s);
+        const el = s ? clipEls[s.asset] || null : null;
+        const local0 = s ? s.sourceIn + (a - s.start) * sp : 0, local1 = s ? s.sourceIn + (b - s.start) * sp : 0;
+        if (el) { await seekTo(el, local0); el.playbackRate = sp; el.preservesPitch = true; }
+        cur = { s, a, b, el, bmp: s ? clipBmps[s.asset] || null : hold, wall0: performance.now() };
+        hold = el || cur.bmp;
+        draw();
+        if (rec.state === 'inactive') rec.start(1000); else rec.resume();
+        if (ac && ac.state !== 'running') await within(ac.resume(), 2500, blocked);
+        if (el) await within(el.play(), 5000, blocked);
+        fadeIn();
+        let fading = false;
+        cur.wall0 = performance.now();
+        const musicNode = startMusic(done, b - a);
+        await new Promise((resolve, reject) => {
+          let finished = false;
+          const finish = (err) => { if (finished) return; finished = true; clearInterval(timer); err ? reject(err) : resolve(); };
+          const over = () => (el ? el.currentTime >= local1 - 0.01 || el.ended : performance.now() - cur.wall0 >= (b - a) * 1000);
+          const step = () => {
+            if (finished) return;
+            if (signal?.aborted) { finish(new DOMException('Export cancelled', 'AbortError')); return; }
+            draw();
+            const p = (done + Math.max(0, Math.min(b, pieceTime()) - a)) / outDur;
+            onProgress({ done: Math.min(0.99, p), eta: p > 0.02 ? ((performance.now() - t0) / 1000 / p) * (1 - p) : null, frame: Math.round(p * outDur * fps), total: Math.round(outDur * fps) });
+            if (over()) { finish(); return; }
+            const left = el ? (local1 - el.currentTime) / sp : b - a - (performance.now() - cur.wall0) / 1000;
+            if (!fading && left < FADE + 0.02) { fading = true; fadeOut(left); }
+            if (el?.requestVideoFrameCallback) el.requestVideoFrameCallback(step); else requestAnimationFrame(step);
+          };
+          const timer = setInterval(() => { if (over() || signal?.aborted) step(); }, 120);
+          step();
+        });
+        el?.pause();
+        try { musicNode?.stop(); } catch { /* already stopped */ }
+        rec.pause();
+        done += b - a;
+      }
+    }
+    for (const r of multi ? [] : ctx.kept) {
       if (signal?.aborted) throw new DOMException('Export cancelled', 'AbortError');
       await seekTo(screen, r.start);
       for (const a of angles) await seekTo(a.el, Math.max(0, r.start - (a.offset || 0)));
@@ -167,6 +260,8 @@ export async function exportRealtime(ctx, opts, { onProgress = () => {}, signal 
       const blocked = 'The browser didn’t let the export play its audio. Click Export again (it needs a click to start sound).';
       if (ac && ac.state !== 'running') await within(ac.resume(), 2500, blocked);
       await within(Promise.all([screen.play(), ...angles.map((a) => a.el.play())]), 5000, blocked);
+      fadeIn();
+      let fading = false;
       const musicNode = startMusic(done, r.end - r.start);
       await new Promise((resolve, reject) => {
         let finished = false;
@@ -187,6 +282,7 @@ export async function exportRealtime(ctx, opts, { onProgress = () => {}, signal 
           const p = (done + Math.max(0, t - r.start)) / outDur;
           onProgress({ done: Math.min(0.99, p), eta: p > 0.02 ? ((performance.now() - t0) / 1000 / p) * (1 - p) : null, frame: Math.round(p * outDur * fps), total: Math.round(outDur * fps) });
           if (t >= r.end - 0.01 || screen.ended) { finish(); return; }
+          if (!fading && r.end - t < FADE + 0.02) { fading = true; fadeOut(r.end - t); }
           if (screen.requestVideoFrameCallback) screen.requestVideoFrameCallback(step); else requestAnimationFrame(step);
         };
         // Frame callbacks stop when playback ends or the tab is hidden; this timer and 'ended' cover both.
@@ -207,10 +303,12 @@ export async function exportRealtime(ctx, opts, { onProgress = () => {}, signal 
     if (rec.state !== 'inactive') rec.stop();
     throw err;
   } finally {
-    screen.pause(); for (const a of angles) a.el.pause();
+    screen?.pause(); for (const a of angles) a.el.pause();
+    for (const el of Object.values(clipEls)) { el.pause(); closeVideo(el); }
     for (const tr of stream.getTracks()) tr.stop();
     ac?.close().catch(() => {});
-    closeVideo(screen); for (const a of angles) closeVideo(a.el);
+    if (screen) closeVideo(screen);
+    for (const a of angles) closeVideo(a.el);
     for (const { el } of brollVideos) closeVideo(el);
     canvas.remove();
   }

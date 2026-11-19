@@ -248,6 +248,20 @@
   .way ul{list-style:none;margin-top:16px;display:grid;gap:6px;font-size:14.5px;color:var(--ink-2)}
   .way li::before{content:"";display:inline-block;width:5px;height:5px;border-radius:5px;background:var(--ink-3);margin:0 10px 2px 0}
   .way .btn{margin-top:22px}
+  /* Four ways (L-05): the Chrome extension before Engine and agents */
+  .w4{grid-template-columns:repeat(4,1fr)}
+  .w4 .way{padding:36px 24px 8px 0}
+  .w4 .way + .way{padding-left:24px}
+  .w4 .way .term{width:100%;white-space:nowrap;overflow:hidden}
+  .xthumb{width:150px;height:116px;border-radius:12px;background:#141518;color:#f2f2f3;padding:10px;display:flex;flex-direction:column;gap:7px;box-shadow:0 18px 30px -18px rgba(16,24,40,.6);font-size:10px}
+  .xthumb .xt-h{display:flex;align-items:center;gap:6px;font-weight:600;font-size:10.5px}
+  .xthumb .xt-h i{width:9px;height:9px;border-radius:50%;background:var(--signal)}
+  .xthumb .xt-m{display:grid;grid-template-columns:repeat(4,1fr);gap:3px}
+  .xthumb .xt-m span{border-radius:6px;background:#202125;color:#a1a1a8;text-align:center;padding:5px 0 4px;font-size:8.5px}
+  .xthumb .xt-m span.on{background:#2c2e34;color:#fff;box-shadow:inset 0 0 0 1px rgba(255,255,255,.18)}
+  .xthumb .xt-l{border-radius:6px;background:#202125;color:#c9cad0;padding:5px 7px;font-size:8.5px}
+  .xthumb .xt-l b{color:#7ee2b8;font-weight:600}
+  .xthumb .xt-go{margin-top:auto;border-radius:7px;background:#fff;color:#141518;text-align:center;font-weight:600;padding:5px 0;font-size:9.5px}
 
   /* Comparison */
   .matrix-scroll{overflow-x:auto;margin-top:48px;border:1px solid var(--line);border-radius:16px;background:#fff}
@@ -273,8 +287,8 @@
   .final{text-align:center}
   .final > p{color:var(--ink-2);max-width:620px;margin:18px auto 0}
   .final .app-icon{width:104px;height:104px;margin:0 auto 28px;filter:drop-shadow(0 18px 24px rgba(16,17,20,.28))}
-  .download-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:48px;text-align:left}
-  .download-card{display:grid;grid-template-rows:108px 94px auto;gap:12px;background:#fff;border:1px solid var(--line);border-radius:16px;padding:24px;box-shadow:0 1px 2px rgba(16,17,20,.04)}
+  .download-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-top:48px;text-align:left}
+  .download-card{display:grid;grid-template-rows:124px 94px auto;gap:12px;background:#fff;border:1px solid var(--line);border-radius:16px;padding:24px;box-shadow:0 1px 2px rgba(16,17,20,.04)}
   .download-copy{min-height:86px}
   .download-copy .os{width:30px;height:30px;color:var(--ink);margin-bottom:14px}
   .download-copy h3{font-size:19px}
@@ -291,7 +305,154 @@
   .web-card h3{font-size:17px}
   .web-card p{font-size:14.5px;color:var(--ink-2);margin-top:4px}
   .final .cta-row{margin-top:28px}
+  .dl-hint{display:block;margin-top:6px;color:var(--ink);font-weight:550;text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:3px}
+  .dl-hint:hover{text-decoration-color:var(--ink)}
+  .first-launch{margin-top:16px;text-align:left;background:var(--mist);border-radius:20px;padding:32px}
+  .fl-head{display:grid;grid-template-columns:minmax(0,.85fr) minmax(0,1.15fr);gap:40px;align-items:start;margin-bottom:24px}
+  .fl-head h3{font-size:24px;letter-spacing:-.02em;line-height:1.2}
+  .fl-head p{color:var(--ink-2);font-size:15px;line-height:1.55}
+  .fl-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+  .fl-card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:20px;display:flex;flex-direction:column;gap:16px}
+  .fl-card.you{border-color:var(--ink);box-shadow:0 0 0 1px var(--ink)}
+  .fl-os{display:flex;align-items:center;gap:8px;font-weight:600;font-size:15px}
+  .fl-os svg{width:18px;height:18px}
+  .fl-you{margin-left:auto;font-size:12px;font-weight:600;color:#c62a12;background:var(--signal-soft);padding:3px 9px;border-radius:99px;display:none}
+  .fl-card.you .fl-you{display:inline-block}
+  .fl-card ol{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:8px;font-size:14.5px;line-height:1.5;color:var(--ink-2)}
+  .fl-card ol b{color:var(--ink);font-weight:600}
+  .fl-card code{font-family:var(--mono);font-size:12.5px;background:var(--mist);padding:2px 6px;border-radius:5px;color:var(--ink);overflow-wrap:anywhere}
+  .fl-shot{border-radius:12px;height:128px;position:relative;overflow:hidden;font-size:12.5px;line-height:1.4}
+  .fl-shot .cur{position:absolute;width:15px;height:21px;filter:drop-shadow(0 1px 2px rgba(0,0,0,.35))}
+  .fl-shot.mac{background:#ececef;border:1px solid #dddde2;padding:14px}
+  .fl-shot.mac .t{font-weight:600;font-size:12px;color:var(--ink-2);margin-bottom:10px}
+  .fl-shot.mac .row{background:#fff;border-radius:9px;padding:10px 10px 10px 12px;display:flex;align-items:center;gap:10px;box-shadow:0 0 0 .5px rgba(0,0,0,.1)}
+  .fl-shot.mac .row span{flex:1;color:#1b1b1f}
+  .fl-shot.mac .cur{right:15px;top:82px}
+  .fl-shot .hl{font-style:normal;flex:none;font-weight:600;font-size:12px;padding:5px 10px;border-radius:7px;background:#fff;border:1px solid #c9c9cf;color:#1b1b1f;box-shadow:0 0 0 3px rgba(255,58,31,.4)}
+  .fl-shot.win{background:#1d5ca8;color:#fff;padding:14px 16px}
+  .fl-shot.win b{font-size:15px;font-weight:600;display:block;margin-bottom:6px}
+  .fl-shot.win .kv{opacity:.85;font-size:12px}
+  .fl-shot.win .btns{position:absolute;right:14px;bottom:12px;display:flex;gap:8px}
+  .fl-shot.win .btns i{font-style:normal;font-size:12px;padding:5px 12px;border:1.5px solid rgba(255,255,255,.8);border-radius:3px}
+  .fl-shot.win .btns i.hl{background:#fff;color:#1d5ca8;border-color:#fff;box-shadow:0 0 0 3px rgba(255,58,31,.55)}
+  .fl-shot.win .cur{right:84px;bottom:-3px}
+  .fl-shot.linux{background:#15161a;color:#d8d8dc;font-family:var(--mono);font-size:12px;padding:16px;display:flex;flex-direction:column;gap:8px}
+  .fl-shot.linux .p{color:#5ad1b0}
+  /* Chrome extension install card (developer install): a full-width row under the three OS cards */
+  .fl-card.fl-ext{grid-column:1/-1;display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr);gap:16px 28px;align-items:start}
+  .fl-ext .fl-os,.fl-ext .fl-alt{grid-column:1/-1}
+  .fl-ext .fl-os .fl-sub{font-weight:450;color:var(--ink-3);font-size:13.5px}
+  .fl-ext .fl-alt{margin-top:0;display:block}
+  .fl-ext .fl-alt a{color:var(--ink);font-weight:550;text-decoration:underline;text-underline-offset:3px}
+  .fl-shot.ext{background:#fff;border:1px solid #dddde2;height:132px;display:flex;flex-direction:column}
+  .fl-shot.ext .xb{height:30px;flex:none;background:#ececef;display:flex;align-items:center;padding:0 10px;gap:6px}
+  .fl-shot.ext .xb i{width:8px;height:8px;border-radius:8px;background:#cfd0d6}
+  .fl-shot.ext .xb span{margin-left:8px;font:12px var(--mono);background:#fff;border-radius:99px;padding:3px 12px;color:#1b1b1f}
+  .fl-shot.ext .xh{display:flex;align-items:center;justify-content:space-between;padding:14px 16px 8px}
+  .fl-shot.ext .xh b{font-size:16px;font-weight:600;color:#1b1b1f}
+  .fl-shot.ext .dev{display:flex;align-items:center;gap:8px;color:#3c3c43;font-size:12.5px}
+  .fl-shot.ext .sw{width:30px;height:17px;border-radius:9px;background:#1a73e8;position:relative;box-shadow:0 0 0 3px rgba(255,58,31,.4)}
+  .fl-shot.ext .sw::after{content:"";position:absolute;right:2px;top:2px;width:13px;height:13px;border-radius:50%;background:#fff}
+  .fl-shot.ext .xr{display:flex;gap:8px;padding:6px 16px}
+  .fl-shot.ext .xr i{white-space:nowrap;font-style:normal;font-size:12px;font-weight:600;padding:5px 10px;border-radius:7px;border:1px solid #c9c9cf;color:#1a5fc8;background:#fff}
+  .fl-shot.ext .xr .hl{color:#1a5fc8}
+  .fl-shot.ext .cur{left:96px;top:100px}
+  .fl-alt{display:flex;flex-direction:column;gap:8px;font-size:13.5px;line-height:1.5;color:var(--ink-2);border-top:1px solid var(--line);padding-top:14px;margin-top:auto}
+  .fl-alt .code{display:flex;align-items:center;gap:8px;background:var(--mist);border-radius:8px;padding:8px 8px 8px 10px}
+  .fl-alt code{font-family:var(--mono);font-size:12px;line-height:1.45;flex:1;color:var(--ink);overflow-wrap:anywhere}
+  .fl-copy{flex:none;font:inherit;font-size:12.5px;font-weight:600;border:1px solid var(--line);background:#fff;border-radius:7px;padding:5px 10px;cursor:pointer;color:var(--ink)}
+  .fl-foot{margin-top:18px;font-size:13.5px;color:var(--ink-3)}
+  .fl-foot a{color:var(--ink-2);text-decoration:underline;text-underline-offset:3px}
+  .dl-toast{position:fixed;right:20px;bottom:20px;z-index:60;width:min(380px,calc(100vw - 40px));background:#101114;color:#fff;border-radius:16px;padding:18px 18px 16px;box-shadow:0 24px 60px rgba(16,17,20,.35);display:flex;flex-direction:column;gap:8px;transform:translateY(12px);opacity:0;transition:opacity .2s,transform .2s;text-align:left}
+  .dl-toast.show{opacity:1;transform:none}
+  .dl-toast[hidden]{display:none}
+  .dl-toast b{font-size:15px;font-weight:600}
+  .dl-toast p{font-size:14px;line-height:1.5;color:#c9cad0}
+  .dl-toast p strong{color:#fff;font-weight:600}
+  .dl-toast .acts{display:flex;gap:8px;margin-top:4px}
+  .dl-toast a,.dl-toast button{font:inherit;font-size:13.5px;font-weight:600;border-radius:9px;padding:8px 12px;cursor:pointer;border:0}
+  .dl-toast a{background:#fff;color:#101114}
+  .dl-toast button{background:rgba(255,255,255,.1);color:#fff}
+  @media(max-width:1080px){.fl-head{grid-template-columns:1fr;gap:10px}.fl-grid{grid-template-columns:1fr}.fl-shot{max-width:460px}.fl-card.fl-ext{display:flex}}
+  @media(max-width:520px){.first-launch{padding:20px 16px}.fl-ext .fl-os{flex-wrap:wrap}.fl-ext .fl-os .fl-sub{flex-basis:100%;padding-left:26px}.fl-shot.ext .xr i:nth-child(n+3){display:none}}
   .reassure{margin-top:14px;font-size:13.5px;color:var(--ink-3)}
+
+  /* Record (L-01): the recording state and the four modes, composed from the sample screens */
+  .rec-hero{position:relative;margin-top:56px;aspect-ratio:1136/710;border-radius:var(--r-l);overflow:hidden;background:#d9dfea;container-type:inline-size;
+    box-shadow:0 0 0 1px rgba(16,17,20,.06),0 40px 80px -30px rgba(16,24,40,.35)}
+  .rec-hero > img.bg,.mph > img.bg{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+  .rh-menu{position:absolute;left:0;right:0;top:0;height:3.2cqw;display:flex;align-items:center;gap:1.7cqw;padding:0 1.7cqw;background:rgba(255,255,255,.62);
+    backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);font-size:1.05cqw;color:var(--ink)}
+  .rh-menu b{font-weight:650}.rh-menu .sp{flex:1}
+  .rh-timer{display:inline-flex;align-items:center;gap:.55cqw;background:var(--ink);color:#fff;border-radius:.55cqw;padding:.25cqw .7cqw;font:500 1cqw var(--mono)}
+  .rh-timer i,.rh-pill .stop{background:var(--signal)}
+  .rh-timer i{width:.7cqw;height:.7cqw;border-radius:50%}
+  .rh-back{position:absolute;left:3.5%;top:14%;width:26%;aspect-ratio:1400/2000;border-radius:.9cqw;overflow:hidden;box-shadow:var(--shadow-rec);background:#16171b}
+  .rh-back img{width:100%;height:100%;object-fit:cover;object-position:left top}
+  .rh-target{position:absolute;left:11%;top:6.5%;width:64%;aspect-ratio:16/10}
+  .rh-win{position:absolute;inset:0;border-radius:.9cqw;overflow:hidden;box-shadow:var(--shadow-rec)}
+  .rh-win img,.mph .w img,.mph .cam img{width:100%;height:100%;object-fit:cover;object-position:left top}
+  .rh-target i{position:absolute;width:2.2cqw;height:2.2cqw;border:.28cqw solid var(--signal)}
+  .rh-target i:nth-child(2){left:-1cqw;top:-1cqw;border-right:0;border-bottom:0;border-top-left-radius:.6cqw}
+  .rh-target i:nth-child(3){right:-1cqw;top:-1cqw;border-left:0;border-bottom:0;border-top-right-radius:.6cqw}
+  .rh-target i:nth-child(4){left:-1cqw;bottom:-1cqw;border-right:0;border-top:0;border-bottom-left-radius:.6cqw}
+  .rh-target i:nth-child(5){right:-1cqw;bottom:-1cqw;border-left:0;border-top:0;border-bottom-right-radius:.6cqw}
+  .rh-pill{position:absolute;left:43%;top:76%;transform:translateX(-50%);display:flex;align-items:center;gap:1cqw;height:3.6cqw;padding:0 1.1cqw 0 .5cqw;border-radius:3cqw;
+    background:rgba(16,17,20,.94);color:#fff;font:500 1.25cqw var(--mono);box-shadow:0 1cqw 2.4cqw -.6cqw rgba(0,0,0,.55)}
+  .rh-pill .stop{width:2.6cqw;height:2.6cqw;border-radius:50%;display:grid;place-items:center}
+  .rh-pill .stop::after{content:"";width:.85cqw;height:.85cqw;border-radius:.2cqw;background:#fff}
+  .rh-pill .lv{display:flex;gap:.28cqw;align-items:center;height:1.6cqw}
+  .rh-pill .lv b{width:.3cqw;border-radius:.2cqw;background:#7ee2b8}
+  .rh-pill .grip{width:.9cqw;height:1.5cqw;background:radial-gradient(circle,rgba(255,255,255,.45) 30%,transparent 34%) 0 0/.45cqw .5cqw}
+  .rh-bub{position:absolute;left:5%;top:58%;width:12%;aspect-ratio:1;border-radius:50%;overflow:hidden;box-shadow:0 0 0 .4cqw #fff,0 1cqw 2.4cqw -.6cqw rgba(0,0,0,.5)}
+  .rh-bub img,.mph .bub img{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+  .modes{display:grid;grid-template-columns:repeat(4,1fr);gap:24px;margin-top:40px}
+  .mph{position:relative;aspect-ratio:16/10;border-radius:14px;overflow:hidden;background:#d9dfea;box-shadow:0 0 0 1px var(--line);container-type:inline-size}
+  .mph .w{position:absolute;left:10%;top:10%;width:80%;aspect-ratio:16/10;border-radius:1.6cqw;overflow:hidden;box-shadow:0 1.2cqw 3cqw -1cqw rgba(10,12,20,.45)}
+  .mph .bub{position:absolute;left:4%;bottom:6%;width:15%;aspect-ratio:1;border-radius:50%;overflow:hidden;box-shadow:0 0 0 .6cqw #fff}
+  .mph .dim{position:absolute;inset:0;background:rgba(16,17,20,.42)}
+  .mph .tag{position:absolute;z-index:2;left:50%;bottom:5%;transform:translateX(-50%);font-size:3.6cqw;font-weight:550;color:#fff;background:rgba(16,17,20,.86);border-radius:9cqw;padding:.8cqw 2.6cqw;white-space:nowrap}
+  .m-display::after{content:"";position:absolute;inset:2.4%;border:.7cqw solid #8b93ff;border-radius:1.6cqw}
+  .m-window .w{z-index:1;box-shadow:0 0 0 .9cqw #8b93ff,0 1.2cqw 3cqw -1cqw rgba(10,12,20,.45)}
+  .m-area .sel{position:absolute;left:30%;top:26%;width:46%;height:44%;border:.7cqw solid #8b93ff;box-shadow:0 0 0 100cqw rgba(16,17,20,.42)}
+  .m-area .sel::before,.m-area .sel::after{content:"";position:absolute;width:2.4cqw;height:2.4cqw;background:#fff;border-radius:.5cqw;box-shadow:0 0 0 .4cqw #8b93ff}
+  .m-area .sel::before{left:-1.6cqw;top:-1.6cqw}.m-area .sel::after{right:-1.6cqw;bottom:-1.6cqw}
+  .m-camera{background:#17181c}
+  .m-camera .cam{position:absolute;left:18%;top:12%;width:64%;aspect-ratio:16/10;border-radius:2cqw;overflow:hidden;box-shadow:0 1.6cqw 4cqw -1cqw rgba(0,0,0,.6)}
+  .m-camera .cam img{object-position:50% 30%;transform:scaleX(-1)}
+  .mode figcaption{margin-top:14px;font-size:15px;color:var(--ink-2)}
+  .mode figcaption b{display:block;color:var(--ink);font-weight:600;font-size:16px}
+
+  /* On a background, or full frame (L-02) */
+  .framing{display:grid;grid-template-columns:1fr 1fr;gap:28px;margin-top:56px}
+  .framing .f169.full .win{inset:0;width:auto;height:auto;border-radius:0;box-shadow:none}
+  .ctl{position:absolute;left:3%;top:4.5%;display:flex;align-items:center;gap:1.4cqw;padding:1cqw 1.6cqw;border-radius:1.4cqw;background:rgba(255,255,255,.92);
+    box-shadow:0 1cqw 3.2cqw rgba(10,12,20,.35);font-size:1.9cqw;line-height:1.4;color:var(--ink);white-space:nowrap}
+  .ctl b{font-weight:600}
+  .ctl em{font:400 1.7cqw var(--mono);color:var(--ink-3);font-style:normal}
+  .ctl .rng{position:relative;width:14cqw;height:.6cqw;border-radius:1cqw;background:var(--line-2)}
+  .ctl .rng i{position:absolute;left:0;top:0;bottom:0;width:40%;border-radius:1cqw;background:var(--ink)}
+  .ctl .rng i::after{content:"";position:absolute;right:-1.2cqw;top:-.9cqw;width:2.4cqw;height:2.4cqw;border-radius:50%;background:#fff;box-shadow:0 0 0 1px rgba(16,17,20,.2),0 2px 4px rgba(16,17,20,.25)}
+  .framing figcaption{margin-top:16px;font-size:15px;color:var(--ink-2)}
+  .framing figcaption b{display:block;color:var(--ink);font-weight:600;font-size:16px}
+  .note{margin-top:28px;font-size:15px;color:var(--ink-2)}
+
+  /* Auto edit (L-03): a real capture of Slipstream Web after one press; a timeline crop on phones */
+  .ae-vis{margin-top:56px;background-image:url(assets/img/grad-graphite.webp)}
+  .ae-vis .ae-m{display:none}
+  .details.d4{grid-template-columns:repeat(4,1fr)}
+
+  /* Share (L-04) */
+  .share{display:grid;grid-template-columns:1fr 1.5fr;gap:64px;align-items:center}
+  .share .btns{display:flex;flex-wrap:wrap;gap:12px;margin-top:32px}
+  .share-vis{padding:0 0 40px 40px;position:relative}
+  .share-vis::before{content:"";position:absolute;left:0;bottom:0;width:70%;height:70%;border-radius:var(--r-xl);background:var(--mist);z-index:-1}
+  .sv-browser{margin:0;border-radius:14px;overflow:hidden;background:#fff;box-shadow:0 0 0 1px rgba(16,17,20,.08),0 30px 60px -24px rgba(16,24,40,.35)}
+  .sv-browser .bar{height:30px;background:var(--mist);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:6px;padding:0 12px}
+  .sv-browser .bar i{width:9px;height:9px;border-radius:9px;background:var(--line-2)}
+  .sv-browser .bar span{margin-left:10px;font:12px var(--mono);color:var(--ink-3);background:#fff;border-radius:6px;padding:2px 14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sv-browser img{width:100%;height:auto}
+  .share .gaps{margin-top:18px;font-size:14px;color:var(--ink-3);line-height:1.55}
 
   /* FAQ */
   .faq-grid{display:grid;grid-template-columns:.8fr 1.2fr;gap:72px}
@@ -323,9 +484,13 @@
     .shape-169{grid-column:1/-1}
     .uses{grid-template-columns:repeat(2,1fr)}
     .details{grid-template-columns:repeat(2,1fr)}
+    .details.d4{grid-template-columns:repeat(2,1fr)}
+    .modes{grid-template-columns:repeat(2,1fr)}
+    .share{grid-template-columns:1fr;gap:40px}
     .ways{grid-template-columns:1fr}
     .way,.way + .way{padding:32px 0;border-left:none;border-bottom:1px solid var(--line)}
-    .download-grid{grid-template-columns:1fr}
+    .download-grid{grid-template-columns:repeat(2,1fr)}
+    .w4 .way,.w4 .way + .way{padding:32px 0}
     .faq-grid{grid-template-columns:1fr;gap:28px}
     .foot{grid-template-columns:1fr}
   }
@@ -341,7 +506,16 @@
     .web-card{grid-template-columns:1fr}
     .web-card .thumb{display:none}
     .details{grid-template-columns:1fr}
+    .details.d4{grid-template-columns:1fr}
     .shot-frame{padding:14px}
+    .framing{grid-template-columns:1fr}
+    .rec-hero{margin-top:40px;border-radius:14px}
+    .ae-vis .ae-d{display:none}
+    .ae-vis .ae-m{display:block}
+    .ae-vis{margin-top:40px;border-radius:18px}
+    .share-vis{padding:0 0 20px 20px}
+    .share .btns .btn{width:100%}
+    .download-grid{grid-template-columns:1fr}
   }
   @media(max-width:520px){
     .nav-in{height:58px;gap:10px}
@@ -349,7 +523,7 @@
     .nav-links .nav-web{display:none}
     .nav-links .nav-cta{padding:8px 12px;font-size:14px}
     .hero{padding-top:44px}
-    .badge{font-size:12.5px;padding:4px 12px 4px 5px;gap:8px}
+    .badge{font-size:12.5px;padding:4px 12px 4px 5px;gap:8px;border-radius:18px;text-align:left;line-height:1.45}
     .badge .pill-new{font-size:11.5px}
     h1{font-size:42px;line-height:1;letter-spacing:-.04em;margin-top:22px}
     .desktop-tail{display:block}
@@ -382,7 +556,7 @@
 <main id="top">
   <section class="hero" style="padding-bottom:0">
     <div class="wrap">
-      <a class="badge" href="app/"><span class="pill-new"><i></i>New</span><span><b>Slipstream Web</b> puts the whole editor in a browser tab</span></a>
+      <a class="badge" href="#auto-edit"><span class="pill-new"><i></i>New</span><span><b>Auto edit</b> cuts your clips to the motion, or to the beat</span></a>
       <h1>Polished screen recordings, straight<span class="desktop-tail"> from your desktop.</span></h1>
       <p class="sub">Hit stop and it’s already edited. Zooms follow your clicks, your camera sits in frame, every word is captioned and the dead air is gone. Nothing gets uploaded.</p>
       <div class="cta-row">
@@ -409,6 +583,33 @@
         </div>
         <div class="cam"><img src="assets/img/cam-noah.webp" alt=""></div>
         <div class="caption" aria-hidden="true"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="record">
+    <div class="wrap">
+      <div class="head">
+        <h2>Record a window, an area or your whole screen.</h2>
+        <p class="lead">A small bar while you set up, and a smaller pill while you record. On desktop, one shortcut starts and stops it, and Slipstream’s own controls never show up in the recording.</p>
+      </div>
+      <figure class="rec-hero" role="img" aria-label="Recording one window: red corner marks around it, a small pill with the stop button, the time and a mic level under it, a camera bubble, and the timer in the menu bar. Nothing else of Slipstream is on screen.">
+        <img class="bg" src="assets/img/grad-tide.webp" alt="" width="1920" height="1200" loading="lazy" decoding="async">
+        <div class="rh-menu" aria-hidden="true"><b>Slate</b><span>File</span><span>Edit</span><span>View</span><span>Window</span><span class="sp"></span><span class="rh-timer"><i></i>0:42</span><span>Thu 19 Nov 1:24 AM</span></div>
+        <div class="rh-back"><img src="assets/img/screen-slate-dark.webp" alt="" width="1400" height="769" loading="lazy" decoding="async"></div>
+        <div class="rh-target"><div class="rh-win"><img src="assets/img/screen-slate-1440.webp" srcset="assets/img/screen-slate-1440.webp 1440w, assets/img/screen-slate.webp 2400w" sizes="(min-width:1200px) 728px, 60vw" alt="" width="1440" height="900" loading="lazy" decoding="async"></div><i></i><i></i><i></i><i></i></div>
+        <div class="rh-bub"><img src="assets/img/cam-noah.webp" alt="" width="720" height="720" loading="lazy" decoding="async"></div>
+        <div class="rh-pill" aria-hidden="true"><span class="stop"></span>0:42<span class="lv"><b style="height:40%"></b><b style="height:90%"></b><b style="height:65%"></b><b style="height:30%"></b></span><span class="grip"></span></div>
+      </figure>
+      <div class="modes">
+        <figure class="mode"><div class="mph m-display"><img class="bg" src="assets/img/grad-tide.webp" alt="" width="1920" height="1200" loading="lazy" decoding="async"><div class="w"><img src="assets/img/screen-slate-1440.webp" alt="" width="1440" height="900" loading="lazy" decoding="async"></div><div class="bub"><img src="assets/img/cam-noah.webp" alt="" width="720" height="720" loading="lazy" decoding="async"></div></div>
+          <figcaption><b>Display</b>Your whole screen, or one of several.</figcaption></figure>
+        <figure class="mode"><div class="mph m-window"><img class="bg" src="assets/img/grad-tide.webp" alt="" width="1920" height="1200" loading="lazy" decoding="async"><div class="dim"></div><div class="w"><img src="assets/img/screen-slate-slash-1440.webp" alt="" width="1440" height="900" loading="lazy" decoding="async"></div><span class="tag">Record window</span></div>
+          <figcaption><b>Window</b>Pick a window and only that window is recorded.</figcaption></figure>
+        <figure class="mode"><div class="mph m-area"><img class="bg" src="assets/img/grad-tide.webp" alt="" width="1920" height="1200" loading="lazy" decoding="async"><div class="w"><img src="assets/img/screen-slate-1440.webp" alt="" width="1440" height="900" loading="lazy" decoding="async"></div><div class="sel"></div></div>
+          <figcaption><b>Area</b>Drag a box around what matters. On desktop it snaps to windows and common sizes.</figcaption></figure>
+        <figure class="mode"><div class="mph m-camera"><div class="cam"><img src="assets/img/cam-noah.webp" alt="" width="720" height="720" loading="lazy" decoding="async"></div><span class="tag">Record camera</span></div>
+          <figcaption><b>Camera only</b>Just you, for a quick update.</figcaption></figure>
       </div>
     </div>
   </section>
@@ -542,6 +743,60 @@
     </div>
   </section>
 
+  <section id="framing" style="background:var(--mist);border-top:1px solid var(--line);border-bottom:1px solid var(--line)">
+    <div class="wrap">
+      <div class="head">
+        <h2>On a background, or full frame.</h2>
+        <p class="lead">Keep the wallpaper and soft shadow, or let the recording fill the frame edge to edge. You choose how much background shows.</p>
+      </div>
+      <div class="framing">
+        <figure>
+          <div class="frame f169">
+            <img class="bg" src="assets/img/grad-morning.webp" alt="" width="1920" height="1200" loading="lazy" decoding="async">
+            <div class="win"><img src="assets/img/screen-slate-1440.webp" srcset="assets/img/screen-slate-1440.webp 1440w, assets/img/screen-slate.webp 2400w" sizes="(min-width:1200px) 466px, (min-width:761px) 40vw, 84vw" alt="" width="1440" height="900" loading="lazy" decoding="async"></div>
+            <div class="bub"><img src="assets/img/cam-noah.webp" alt="" width="720" height="720" loading="lazy" decoding="async"></div>
+            <div class="cc">Hit plus or type a slash and insert</div>
+            <div class="ctl" aria-hidden="true"><b>Background</b><span class="rng"><i></i></span><em>7%</em></div>
+          </div>
+          <figcaption><b>On a background</b>Tight, Balanced or Roomy, or set the exact amount.</figcaption>
+        </figure>
+        <figure>
+          <div class="frame f169 full">
+            <div class="win"><img src="assets/img/screen-slate-1440.webp" srcset="assets/img/screen-slate-1440.webp 1440w, assets/img/screen-slate.webp 2400w" sizes="(min-width:1200px) 554px, (min-width:761px) 48vw, 100vw" alt="" width="1440" height="900" loading="lazy" decoding="async"></div>
+            <div class="bub"><img src="assets/img/cam-noah.webp" alt="" width="720" height="720" loading="lazy" decoding="async"></div>
+            <div class="cc">Hit plus or type a slash and insert</div>
+            <div class="ctl" aria-hidden="true"><b>Full frame</b><em>cursor kept in view</em></div>
+          </div>
+          <figcaption><b>Full frame</b>The recording fills the shot and follows your cursor as it crops.</figcaption>
+        </figure>
+      </div>
+      <p class="note">Mix them: keep the wallpaper for the intro, then go full frame for a close-up demo.</p>
+    </div>
+  </section>
+
+  <section id="auto-edit">
+    <div class="wrap">
+      <div class="head">
+        <h2>Arrange your clips. Press Auto edit.</h2>
+        <p class="lead">Slipstream tightens each clip and cuts on the motion in it, in any shape. Add a song and the cuts land on the beat. It all runs on your computer.</p>
+      </div>
+      <div class="shot-frame ae-vis">
+        <div class="shot ae-d"><img src="assets/img/autoedit-2160.webp" srcset="assets/img/autoedit-1080.webp 1080w, assets/img/autoedit-2160.webp 2160w" sizes="(min-width:1200px) 1076px, calc(100vw - 124px)" alt="Slipstream Web after one press of Auto edit: “6 clips tightened from 2:34 to 0:39”, the preview, the Auto edit panel with Match, Rough length, Pace, Sound and Order, and the timeline with numbered clips, the sound and the motion curve." width="2160" height="1800" loading="lazy" decoding="async"></div>
+        <div class="shot ae-m"><img src="assets/img/autoedit-timeline-1500.webp" srcset="assets/img/autoedit-timeline-750.webp 750w, assets/img/autoedit-timeline-1500.webp 1500w" sizes="calc(100vw - 68px)" alt="The timeline after Auto edit: six clips cut to 0:39, numbered by source, with the sound and the motion curve under them." width="1500" height="370" loading="lazy" decoding="async"></div>
+      </div>
+      <div class="details d4">
+        <div class="detail"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 15c2 0 2-6 4-6s2 9 4 9 2-12 4-12 2 9 4 9h2"/></svg>
+          <h3>No music needed</h3><p>Cuts follow the motion in your clips. Your order and your sound stay.</p></div>
+        <div class="detail"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V6l11-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16" r="2.5"/></svg>
+          <h3>Or cut to a song</h3><p>Add a track from your computer. Cuts land on the beat, and each clip’s big moment lands on one too.</p></div>
+        <div class="detail"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M10 2h4"/></svg>
+          <h3>A rough length</h3><p>Keep most, or get it down to 30 seconds. For an hour-long workshop, pick 10 minutes and pauses and retakes go first.</p></div>
+        <div class="detail"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h18M7 8l-4 4 4 4M17 8l4 4-4 4"/></svg>
+          <h3>Nothing is thrown away</h3><p>Drag a clip’s edge to bring back what was cut. Your changes stay put when you try another take.</p></div>
+      </div>
+    </div>
+  </section>
+
   <section style="padding-top:0">
     <div class="wrap">
       <div class="head">
@@ -579,12 +834,34 @@
   <section class="private" id="private">
     <div class="bgph" aria-hidden="true"></div>
     <div class="wrap">
-      <h2>Your recordings never leave your computer.</h2>
-      <p class="lead">Cloud editors upload first and edit later. Slipstream records, transcribes, edits and exports on your own machine, so there’s nothing to upload, leak or lose access to.</p>
+      <h2>Nothing leaves your computer unless you share it.</h2>
+      <p class="lead">Cloud editors upload first and edit later. Slipstream records, transcribes, edits and exports on your own machine. When you do share a link, it goes to storage you control.</p>
       <div class="facts">
         <div class="fact"><h3>Speech-to-text runs locally</h3><p>Whisper runs on your CPU or GPU. Your voice is never sent to a server.</p></div>
         <div class="fact"><h3>No account, no watermark</h3><p>Open it and record. There’s no sign-up, no usage cap and no logo stamped on your video.</p></div>
-        <div class="fact"><h3>Projects are yours</h3><p>Footage stays in your folders, or in your browser’s storage on the web. A .slipstream file moves a project between computers without any cloud.</p></div>
+        <div class="fact"><h3>Links on your terms</h3><p>Share from your own bucket or straight to one person. Links expire when you say.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="share">
+    <div class="wrap share">
+      <div>
+        <h2>Share a link from storage you own.</h2>
+        <p class="lead">Record a tab, a window or your screen from Chrome’s toolbar. The link is ready when you stop, served from your own bucket, with no Slipstream server in between.</p>
+        <ul class="ticks">
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 4.5 4.5L19 7"/></svg><span><b>Uploads while you record,</b> so there’s no wait at the end.</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 4.5 4.5L19 7"/></svg><span><b>A page for viewers</b> with the video, captions, transcript and chapters. No account needed.</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 4.5 4.5L19 7"/></svg><span><b>You decide how long.</b> Links expire after 24 hours, 7 days, 30 days or never (30 days and never need a public address for your bucket). Or send it straight to one person, peer to peer.</span></li>
+        </ul>
+        <p class="gaps">With no server in between, there are no viewer comments or reactions, no view counts and no team workspace.</p>
+        <div class="btns"><a class="btn btn-primary" href="https://github.com/tanzir71/slipstream-releases/releases/download/v2.1.0/slipstream-for-chrome.zip" data-asset="slipstream-for-chrome.zip">Download the extension</a><a class="btn btn-ghost" href="#faq-sharing">How sharing works</a></div>
+      </div>
+      <div class="share-vis">
+        <figure class="sv-browser">
+          <div class="bar" aria-hidden="true"><i></i><i></i><i></i><span>videos.example.com/v/7Kq2m9/</span></div>
+          <img src="assets/img/share-watch-1120.webp" srcset="assets/img/share-watch-1120.webp 1120w, assets/img/share-watch-2240.webp 2240w" sizes="(min-width:1200px) 600px, (min-width:761px) calc(100vw - 104px), calc(100vw - 60px)" alt="The page a viewer opens from a shared link: the video with captions, the sender’s name, Copy link and Download, and the transcript beside it. The footer says the sender hosts it on their own domain and the link expires in 7 days." width="1120" height="744" loading="lazy" decoding="async">
+        </figure>
       </div>
     </div>
   </section>
@@ -595,7 +872,7 @@
         <h2>Native when you want power. A tab when you don’t.</h2>
         <p class="lead">The same edit runs everywhere: transcript cuts, zooms, layouts and captions.</p>
       </div>
-      <div class="ways">
+      <div class="ways w4">
         <div class="way">
           <div class="vis"><img class="icon" src="assets/brand/app-icon-256.png" alt="" width="96" height="96"></div>
           <h3>Desktop app</h3>
@@ -609,6 +886,13 @@
           <p>The full editor in a Chrome tab. Whisper runs on WebGPU and export uses WebCodecs. Nothing to install.</p>
           <ul><li>Record screen, camera and mic in the tab</li><li>A copilot that edits on request, on-device</li><li>MP4, WebM, SRT, VTT and editor handoff out</li></ul>
           <a class="btn btn-primary" href="app/">Open web app</a>
+        </div>
+        <div class="way">
+          <div class="vis"><div class="xthumb" aria-hidden="true"><div class="xt-h"><i></i>Slipstream</div><div class="xt-m"><span class="on">Tab</span><span>Screen</span><span>Window</span><span>Camera</span></div><div class="xt-l"><b>Link ready when you stop</b></div><div class="xt-go">Start recording</div></div></div>
+          <h3>Chrome extension</h3>
+          <p>Record from the toolbar and share a link from your own storage. Works in Chrome, Edge, Brave and Arc.</p>
+          <ul><li>Tab audio, camera and mic</li><li>Link ready when you stop</li><li>No account, no Slipstream server</li></ul>
+          <a class="btn btn-ghost" href="https://github.com/tanzir71/slipstream-releases/releases/download/v2.1.0/slipstream-for-chrome.zip" data-asset="slipstream-for-chrome.zip">Download for Chrome</a>
         </div>
         <div class="way">
           <div class="vis"><div class="term"><b>$ slipstream_engine</b> transcribe demo.mov<br><i>✓</i> 412 words, 3 fillers<br><b>$ slipstream_engine</b> render --plan cut.json<br><i>✓</i> demo-916.mp4 (0:48)</div></div>
@@ -707,11 +991,11 @@
               <p>x64 installer for Windows 10 and 11.</p>
             </div>
             <div class="download-actions">
-              <a class="btn btn-primary" href="https://github.com/tanzir71/slipstream-releases/releases/download/v2.0.2/slipstream-windows-x64-setup.exe" data-asset="slipstream-windows-x64-setup.exe">Download .exe</a>
-              <a class="download-link" href="https://github.com/tanzir71/slipstream-releases/releases/download/v2.0.2/slipstream-windows-x64.msi" data-asset="slipstream-windows-x64.msi">MSI</a>
+              <a class="btn btn-primary" href="https://github.com/tanzir71/slipstream-releases/releases/download/v2.1.0/slipstream-windows-x64-setup.exe" data-asset="slipstream-windows-x64-setup.exe">Download .exe</a>
+              <a class="download-link" href="https://github.com/tanzir71/slipstream-releases/releases/download/v2.1.0/slipstream-windows-x64.msi" data-asset="slipstream-windows-x64.msi">MSI</a>
               <a class="download-link" href="download/slipstream-windows-sha256.txt">SHA-256</a>
             </div>
-            <div class="download-meta">Use setup.exe for most PCs and the MSI for managed installs.</div>
+            <div class="download-meta">Use setup.exe for most PCs and the MSI for managed installs. <a class="dl-hint" href="#first-launch">First launch: More info → Run anyway</a></div>
           </article>
           <article class="download-card">
             <div class="download-copy">
@@ -720,11 +1004,11 @@
               <p>Native app for Apple silicon Macs.</p>
             </div>
             <div class="download-actions">
-              <a class="btn btn-primary" href="https://github.com/tanzir71/slipstream-releases/releases/download/v2.0.2/slipstream-macos.dmg" data-asset="slipstream-macos.dmg" id="dl">Download .dmg</a>
-              <a class="download-link" href="https://github.com/tanzir71/slipstream-releases/releases/download/v2.0.2/slipstream-macos.zip" data-asset="slipstream-macos.zip">ZIP</a>
+              <a class="btn btn-primary" href="https://github.com/tanzir71/slipstream-releases/releases/download/v2.1.0/slipstream-macos.dmg" data-asset="slipstream-macos.dmg" id="dl">Download .dmg</a>
+              <a class="download-link" href="https://github.com/tanzir71/slipstream-releases/releases/download/v2.1.0/slipstream-macos.zip" data-asset="slipstream-macos.zip">ZIP</a>
               <a class="download-link" href="download/slipstream-macos-sha256.txt">SHA-256</a>
             </div>
-            <div class="download-meta">Requires macOS 26 or later.</div>
+            <div class="download-meta">Requires macOS 26 or later. <a class="dl-hint" href="#first-launch">First launch: Privacy &amp; Security → Open Anyway</a></div>
           </article>
           <article class="download-card">
             <div class="download-copy">
@@ -733,12 +1017,75 @@
               <p>x64 AppImage and Debian package.</p>
             </div>
             <div class="download-actions">
-              <a class="btn btn-primary" href="https://github.com/tanzir71/slipstream-releases/releases/download/v2.0.2/slipstream-linux-x64.AppImage" data-asset="slipstream-linux-x64.AppImage">Download AppImage</a>
-              <a class="download-link" href="https://github.com/tanzir71/slipstream-releases/releases/download/v2.0.2/slipstream-linux-x64.deb" data-asset="slipstream-linux-x64.deb">DEB</a>
+              <a class="btn btn-primary" href="https://github.com/tanzir71/slipstream-releases/releases/download/v2.1.0/slipstream-linux-x64.AppImage" data-asset="slipstream-linux-x64.AppImage">Download AppImage</a>
+              <a class="download-link" href="https://github.com/tanzir71/slipstream-releases/releases/download/v2.1.0/slipstream-linux-x64.deb" data-asset="slipstream-linux-x64.deb">DEB</a>
               <a class="download-link" href="download/slipstream-linux-sha256.txt">SHA-256</a>
             </div>
-            <div class="download-meta">AppImage runs anywhere. Use the DEB on Debian and Ubuntu.</div>
+            <div class="download-meta">AppImage runs anywhere. Use the DEB on Debian and Ubuntu. <a class="dl-hint" href="#first-launch">First launch: allow the AppImage to run</a></div>
           </article>
+          <article class="download-card">
+            <div class="download-copy">
+              <svg class="os" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 4.5a2 2 0 1 1 4 0V6H17a1 1 0 0 1 1 1v3.5h1.5a2 2 0 1 1 0 4H18V18a1 1 0 0 1-1 1h-3.5v-1.5a2 2 0 1 0-4 0V19H6a1 1 0 0 1-1-1v-3.5h1.5a2 2 0 1 0 0-4H5V7a1 1 0 0 1 1-1h3.5z"/></svg>
+              <h3>Chrome extension</h3>
+              <p>For Chrome, Edge, Brave and Arc.</p>
+            </div>
+            <div class="download-actions">
+              <a class="btn btn-primary" href="https://github.com/tanzir71/slipstream-releases/releases/download/v2.1.0/slipstream-for-chrome.zip" data-asset="slipstream-for-chrome.zip">Download .zip</a>
+              <a class="download-link" href="#install-extension">Install steps</a>
+              <a class="download-link" href="download/SHA256SUMS">SHA-256</a>
+            </div>
+            <div class="download-meta">A developer install until it’s in the browser stores. <a class="dl-hint" href="#install-extension">Install: Developer mode → Load unpacked</a></div>
+          </article>
+        </div>
+        <div class="first-launch" id="first-launch">
+          <div class="fl-head">
+            <h3>The first time you open it, confirm it once</h3>
+            <p>Slipstream is free, so it isn’t signed through Apple’s or Microsoft’s paid programs. Its first launch stops at a security prompt that looks like an error. It isn’t: confirm it once as shown here, and Slipstream opens normally from then on. The Chrome extension isn’t in the browser stores yet, so you load it yourself, as shown below.</p>
+          </div>
+          <div class="fl-grid">
+            <article class="fl-card" data-os="mac">
+              <div class="fl-os"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16.4 12.6c0-2.5 2-3.6 2.1-3.7-1.2-1.7-3-1.9-3.6-2-1.5-.2-3 .9-3.7.9-.8 0-2-.9-3.2-.8-1.7 0-3.2 1-4 2.4-1.7 3-.4 7.4 1.2 9.8.8 1.2 1.8 2.5 3 2.4 1.2 0 1.7-.8 3.1-.8 1.5 0 1.9.8 3.2.8 1.3 0 2.1-1.2 2.9-2.4.9-1.4 1.3-2.7 1.3-2.8 0 0-2.4-1-2.3-3.8zM14.1 5.2c.7-.8 1.1-1.9 1-3-1 0-2.1.6-2.8 1.4-.6.7-1.1 1.8-1 2.9 1.1.1 2.1-.5 2.8-1.3z"/></svg>macOS<span class="fl-you">Your system</span></div>
+              <div class="fl-shot mac" aria-hidden="true"><div class="t">System Settings › Privacy &amp; Security › Security</div><div class="row"><span>“Slipstream” was blocked to protect your Mac.</span><em class="hl">Open Anyway</em></div><svg class="cur" viewBox="0 0 22 30" aria-hidden="true"><path d="M2 1.8v22.6l6.3-6.1 3.9 9 3.9-1.7-3.8-8.7h8.6z" fill="#111" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg></div>
+              <ol>
+                <li>Drag Slipstream to Applications and open it. When macOS says it can’t verify the app, click <b>Done</b>, not Move to Trash.</li>
+                <li>Go to <b>System Settings → Privacy &amp; Security</b> and scroll down to Security.</li>
+                <li>Click <b>Open Anyway</b>, then confirm with your password or Touch ID.</li>
+              </ol>
+              <div class="fl-alt">Rather skip the prompt? Install from Terminal instead. It checks the download’s SHA-256 and signature first.
+                <div class="code"><code id="fl-cmd">curl -fsSL https://raw.githubusercontent.com/tanzir71/slipstream-releases/main/install.sh | bash</code><button class="fl-copy" type="button" data-copy="fl-cmd">Copy</button></div>
+              </div>
+            </article>
+            <article class="fl-card" data-os="win">
+              <div class="fl-os"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.5 10.4 4.5v7H3zM11.4 4.4 21 3v8.5h-9.6zM3 12.5h7.4v7L3 18.5zM11.4 12.5H21V21l-9.6-1.4z"/></svg>Windows<span class="fl-you">Your system</span></div>
+              <div class="fl-shot win" aria-hidden="true"><b>Windows protected your PC</b><div class="kv">App: slipstream-windows-x64-setup.exe<br>Publisher: Unknown publisher</div><div class="btns"><i class="hl">Run anyway</i><i>Don’t run</i></div><svg class="cur" viewBox="0 0 22 30" aria-hidden="true"><path d="M2 1.8v22.6l6.3-6.1 3.9 9 3.9-1.7-3.8-8.7h8.6z" fill="#111" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg></div>
+              <ol>
+                <li>Run the installer. If a blue <b>Windows protected your PC</b> screen appears, click <b>More info</b>.</li>
+                <li>Check the app is <code>slipstream-windows-x64-setup.exe</code>, then click <b>Run anyway</b>.</li>
+                <li>Finish the installer. You only do this once per download.</li>
+              </ol>
+            </article>
+            <article class="fl-card" data-os="linux">
+              <div class="fl-os"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.5c-2.2 0-3.4 1.8-3.4 4.4 0 1.7-.4 2.6-1.4 4-1.3 1.8-2.6 3.8-2.4 6.2.2 1.6 1.5 2.4 3 2.7 1.3.3 2.4 1.7 4.2 1.7s2.9-1.4 4.2-1.7c1.5-.3 2.8-1.1 3-2.7.2-2.4-1.1-4.4-2.4-6.2-1-1.4-1.4-2.3-1.4-4 0-2.6-1.2-4.4-3.4-4.4z"/></svg>Linux<span class="fl-you">Your system</span></div>
+              <div class="fl-shot linux" aria-hidden="true"><div><span class="p">~/Downloads $</span> chmod +x slipstream-linux-x64.AppImage</div><div><span class="p">~/Downloads $</span> ./slipstream-linux-x64.AppImage</div></div>
+              <ol>
+                <li>AppImage: let it run first, with <b>Properties → Permissions → Allow executing</b> or <code>chmod +x</code> as shown.</li>
+                <li>DEB on Debian or Ubuntu: <code>sudo apt install ./slipstream-linux-x64.deb</code></li>
+              </ol>
+            </article>
+            <article class="fl-card fl-ext" id="install-extension" data-os="ext">
+              <div class="fl-os"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 4.5a2 2 0 1 1 4 0V6H17a1 1 0 0 1 1 1v3.5h1.5a2 2 0 1 1 0 4H18V18a1 1 0 0 1-1 1h-3.5v-1.5a2 2 0 1 0-4 0V19H6a1 1 0 0 1-1-1v-3.5h1.5a2 2 0 1 0 0-4H5V7a1 1 0 0 1 1-1h3.5z"/></svg>Install the extension<span class="fl-sub">Chrome, Edge, Brave and Arc</span><span class="fl-you">Your download</span></div>
+              <div class="fl-shot ext" aria-hidden="true"><div class="xb"><i></i><i></i><i></i><span>chrome://extensions</span></div><div class="xh"><b>Extensions</b><span class="dev">Developer mode <i class="sw"></i></span></div><div class="xr"><i class="hl">Load unpacked</i><i>Pack extension</i><i>Update</i></div><svg class="cur" viewBox="0 0 22 30" aria-hidden="true"><path d="M2 1.8v22.6l6.3-6.1 3.9 9 3.9-1.7-3.8-8.7h8.6z" fill="#111" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg></div>
+              <ol>
+                <li>Unzip <code>slipstream-for-chrome.zip</code> and move the <b>Slipstream for Chrome</b> folder somewhere it can stay, not Downloads.</li>
+                <li>Open <code>chrome://extensions</code> (Edge: <code>edge://extensions</code>, Brave: <code>brave://extensions</code>; Arc uses Chrome’s page).</li>
+                <li>Turn on <b>Developer mode</b>.</li>
+                <li>Click <b>Load unpacked</b> and pick the <b>Slipstream for Chrome</b> folder.</li>
+                <li>Pin it: click the puzzle-piece icon, then the pin (in Edge, the eye icon).</li>
+              </ol>
+              <div class="fl-alt">To update, replace the folder’s contents in place and press <b>Reload</b> on the extension’s card. Don’t move or rename the folder: your recordings belong to it. The browser may ask about developer-mode extensions; keep it. <a href="https://github.com/tanzir71/slipstream-releases/blob/main/extension/INSTALL.md">Full install guide</a>, with removing and troubleshooting.</div>
+            </article>
+          </div>
+          <p class="fl-foot">Only confirm files you downloaded from this page or the <a href="https://github.com/tanzir71/slipstream-releases">Slipstream releases on GitHub</a>. Each download has a SHA-256 file beside it if you want to check it.</p>
         </div>
         <a class="web-card" href="app/">
           <span class="thumb"><img src="assets/img/editor.webp" alt="" loading="lazy"></span>
@@ -760,10 +1107,16 @@
       <div class="head"><h2>Questions</h2><p class="lead">Something missing? Open an issue on <a href="https://github.com/tanzir71/slipstream-releases" style="text-decoration:underline;text-underline-offset:3px">GitHub</a>.</p></div>
       <div class="faq">
         <details open><summary>Is it really free?</summary><p>Yes. The desktop apps and Slipstream Web are free, with no account, no watermark and no usage caps.</p></details>
-        <details><summary>Does my video get uploaded anywhere?</summary><p>No. Recording, transcription, editing and export all happen on your computer. The desktop apps have no servers to send footage to. Slipstream Web keeps projects in your browser’s storage and renders with WebCodecs.</p></details>
+        <details><summary>Do I need music for Auto edit?</summary><p>No. Without music it cuts to the motion in your clips and keeps your order and sound. Add a song from your computer and the cuts land on the beat.</p></details>
+        <details><summary>How does Auto edit decide how much to cut?</summary><p>You pick a rough length. Auto keeps about a quarter of short footage. For long recordings, choose 5, 10 or 20 minutes and it cuts pauses, retakes and quiet stretches first, keeping sentences whole.</p></details>
+        <details id="faq-sharing"><summary>Does sharing upload my video to Slipstream?</summary><p>No. Links are served from a bucket you control, such as Cloudflare R2, Amazon S3, Backblaze B2 or any S3-compatible storage. The Chrome extension uploads there while you record, so the link is ready when you stop, and viewers get a page with captions, a transcript and chapters. You can also send a recording straight to one person, peer to peer.</p></details>
+        <details><summary>How do I install the Chrome extension?</summary><p>Download the .zip, unzip it to a folder that can stay put, open <code>chrome://extensions</code> (<code>edge://extensions</code> in Edge), turn on Developer mode and choose Load unpacked. It’s a developer install until the extension is in the browser stores. <a href="#install-extension">See the steps</a>.</p></details>
+        <details><summary>Can I record just one window?</summary><p>Yes. Pick Window and choose the one you want (in Slipstream Web, the browser asks which). You can also record a whole display, an area you draw, or only your camera.</p></details>
+        <details><summary>Does my video get uploaded anywhere?</summary><p>No. Recording, transcription, editing and export all happen on your computer. The desktop apps have no servers to send footage to. Slipstream Web keeps projects in your browser’s storage and renders with WebCodecs. If you share a link, the video goes to a bucket you choose.</p></details>
         <details><summary>What does the web app download?</summary><p>Only code and the speech model. The first time you transcribe, it fetches the transcription library and a Whisper model (about 40 to 250 MB, depending on the quality you pick) from public CDNs. Your browser caches them and your audio is processed locally. You can also import an SRT or VTT file instead.</p></details>
         <details><summary>Which browsers work for Slipstream Web?</summary><p>Desktop Chrome, Edge, Arc, Brave and other Chromium browsers (version 120 or later) support everything: recording, WebGPU transcription and MP4 export. Safari and Firefox support is partial while their WebCodecs support catches up, so use the desktop app there.</p></details>
         <details><summary>The Mac app says it “can’t be opened” on first launch. Why?</summary><p>Slipstream is free and isn’t notarized (that needs Apple’s paid developer program), so macOS asks once for apps downloaded in a browser. Open it once, then go to <b>System Settings → Privacy &amp; Security</b> and click <b>Open Anyway</b>. Or install from Terminal, which skips the prompt: <code>curl -fsSL https://raw.githubusercontent.com/tanzir71/slipstream-releases/main/install.sh | bash</code> (it checks the download’s SHA-256 and signature first).</p></details>
+        <details><summary>Windows says “Windows protected your PC”. What do I do?</summary><p>That’s Microsoft Defender SmartScreen, which shows it for new apps without a paid code-signing certificate. Click <b>More info</b>, check the app is <code>slipstream-windows-x64-setup.exe</code>, then click <b>Run anyway</b>. You only do this once per download.</p></details>
         <details><summary>What do I need to run the desktop app?</summary><p>Windows 10 or 11 (x64), an Apple silicon Mac with macOS 26 or later, or Linux x64 via AppImage or DEB. Camera effects like Center Stage and Portrait need supported Mac camera hardware and are captured automatically by the macOS build.</p></details>
         <details><summary>How is this different from Screen Studio, Descript or OpusClip?</summary><p>Each of those owns one slice: a Mac-only recorder, a cloud transcript editor, or a cloud repurposer. Slipstream does capture, transcript editing, zoom, camera layouts, captions and export in one local-first app, on every desktop OS and in the browser. See the comparison above.</p></details>
       </div>
@@ -783,6 +1136,59 @@
   </div>
 </footer>
 
+<div class="dl-toast" id="dl-toast" role="status" aria-live="polite" hidden>
+  <b>Your download has started</b>
+  <p id="dl-toast-msg"></p>
+  <div class="acts"><a href="#first-launch" id="dl-toast-go">Show me how</a><button type="button" id="dl-toast-close">Got it</button></div>
+</div>
+<script>
+(() => {
+  // One-time first-launch step: shown next to the download, on the visitor's own system, and right after a download starts.
+  const msgs = {
+    mac: 'The first time you open Slipstream, macOS blocks it. Click <strong>Done</strong>, then go to <strong>System Settings → Privacy &amp; Security</strong> and click <strong>Open Anyway</strong>.',
+    win: 'If Windows shows <strong>Windows protected your PC</strong>, click <strong>More info</strong>, then <strong>Run anyway</strong>.',
+    linux: 'Allow the AppImage to run first: <strong>chmod +x</strong>, or Properties → Allow executing.',
+    ext: 'Unzip it to a folder that can stay put. Open <strong>chrome://extensions</strong>, turn on <strong>Developer mode</strong>, then <strong>Load unpacked</strong> and pick the folder.',
+  };
+  const osOf = (href) => (/slipstream-for-chrome/.test(href) ? 'ext' : /macos/.test(href) ? 'mac' : /windows/.test(href) ? 'win' : /linux/.test(href) ? 'linux' : null);
+  const ua = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || navigator.userAgent;
+  const mine = /mac/i.test(ua) ? 'mac' : /win/i.test(ua) ? 'win' : (/linux|x11/i.test(ua) && !/android/i.test(navigator.userAgent)) ? 'linux' : null;
+  const card = mine && document.querySelector('.fl-card[data-os="' + mine + '"]');
+  if (card) { card.classList.add('you'); card.parentElement.prepend(card); }
+
+  const toast = document.getElementById('dl-toast');
+  const msg = document.getElementById('dl-toast-msg');
+  let timer;
+  const hide = () => { toast.classList.remove('show'); clearTimeout(timer); timer = setTimeout(() => { toast.hidden = true; }, 220); };
+  document.addEventListener('click', (e) => {
+    const a = e.target.closest('a[data-asset], #hero-dl');
+    const os = a && osOf(a.getAttribute('href') || '');
+    if (!os) return; // the hero button without a detected OS only scrolls to the downloads
+    msg.innerHTML = msgs[os];
+    document.getElementById('dl-toast-go').setAttribute('href', os === 'ext' ? '#install-extension' : '#first-launch');
+    // The extension isn't tied to the visitor's OS: its card is marked once they download it.
+    if (os === 'ext') document.getElementById('install-extension')?.classList.add('you');
+    toast.hidden = false;
+    requestAnimationFrame(() => toast.classList.add('show'));
+    clearTimeout(timer);
+    timer = setTimeout(hide, 20000);
+  });
+  document.getElementById('dl-toast-close').addEventListener('click', hide);
+  document.getElementById('dl-toast-go').addEventListener('click', hide);
+  addEventListener('keydown', (e) => { if (e.key === 'Escape' && !toast.hidden) hide(); });
+  document.querySelectorAll('.fl-copy').forEach((b) => b.addEventListener('click', async () => {
+    const el = document.getElementById(b.dataset.copy);
+    try {
+      await navigator.clipboard.writeText(el.textContent);
+      b.textContent = 'Copied';
+      setTimeout(() => { b.textContent = 'Copy'; }, 1600);
+    } catch {
+      const r = document.createRange(); r.selectNodeContents(el);
+      getSelection().removeAllRanges(); getSelection().addRange(r);
+    }
+  }));
+})();
+</script>
 <script>
 (() => {
   const nav = document.getElementById('nav');

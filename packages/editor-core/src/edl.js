@@ -426,3 +426,347 @@ export function restoreRetake(words, id) {
     return rest;
   });
 }
+
+// ---- Multi-clip sequences (ticket AE-01) -------------------------------------------------------------
+// A multi-clip project plays sources.clips through segments with an `asset`: { id, asset, sourceIn, start, end,
+// speed? }. start/end are OUTPUT seconds and the segments are laid end to end; sourceIn is the clip time at start
+// and a source second lasts 1/speed output seconds. There is no single source timeline, so zooms, scenes,
+// frameSections, masks, annotations, B-roll and chapters use output seconds, and edits never add cuts: deleting
+// words or a timeline range removes that stretch from the segments (a ripple) and moves later items with it.
+// Words belong to clips ({ clip, start, end } in clip seconds); sequenceWords() lays them out on the output.
+
+/** Items on the output timeline of a multi-clip edit that move with the segments under them. */
+export const TIMELINE_LISTS = ['zooms', 'scenes', 'frameSections', 'masks', 'annotations', 'broll'];
+const SPEED_MIN = 0.88, SPEED_MAX = 1.12;
+const r6 = (v) => Math.round(v * 1e6) / 1e6;
+
+/** Playback rate of a segment: speed clamped to 0.88..1.12, default 1. */
+export function segmentSpeed(s) {
+  const v = Number(s?.speed);
+  return Number.isFinite(v) && v > 0 ? Math.max(SPEED_MIN, Math.min(SPEED_MAX, v)) : 1;
+}
+
+/** Segments that play a clip, sorted by start. */
+export function sequenceSegments(segments) {
+  return (Array.isArray(segments) ? segments : []).filter((s) => s && typeof s.asset === 'string' && s.asset && s.end > s.start).slice().sort((a, b) => a.start - b.start);
+}
+
+/** Output length of a sequence: the last segment's end. */
+export function sequenceDuration(segments) {
+  return sequenceSegments(segments).reduce((m, s) => Math.max(m, s.end), 0);
+}
+
+/** Clip seconds a segment plays: [sourceIn, sourceOut). */
+export function segmentSourceRange(s) {
+  return { start: s.sourceIn, end: s.sourceIn + (s.end - s.start) * segmentSpeed(s) };
+}
+
+/** Index of the segment playing at output time t (start inclusive, end exclusive) in sorted segments, or -1. */
+export function segmentIndexAt(sorted, t) {
+  let lo = 0, hi = sorted.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const s = sorted[mid];
+    if (t < s.start) hi = mid - 1;
+    else if (t >= s.end) lo = mid + 1;
+    else return mid;
+  }
+  return -1;
+}
+
+/**
+ * What plays at output time t: { index, segment, asset, local, speed } with local = the clip time, or null in a gap
+ * or past the end. The last segment also answers for t === its end (the final frame).
+ */
+export function sequenceTime(segments, t) {
+  const sorted = sequenceSegments(segments);
+  let i = segmentIndexAt(sorted, t);
+  if (i < 0 && sorted.length && Math.abs(t - sorted[sorted.length - 1].end) < 1e-9) i = sorted.length - 1;
+  if (i < 0) return null;
+  const s = sorted[i], speed = segmentSpeed(s);
+  return { index: i, segment: s, asset: s.asset, local: s.sourceIn + (t - s.start) * speed, speed };
+}
+
+/**
+ * The sound of a sequence as pieces: each kept stretch (timeline seconds) of each segment, at the output time where
+ * it plays (the kept ranges laid end to end). A gap between segments keeps its length and stays silent. xin / xout:
+ * the crossfade overlap at a cut between pieces that touch on the output (each side plays `crossfade` seconds past
+ * the cut into its own footage); 0 at the very start and end and next to a gap.
+ * → [{ s, a, b, o0, o1, xin, xout }] in output order.
+ */
+export function sequenceAudioPieces(kept, segments, { crossfade = 0.04 } = {}) {
+  const segs = sequenceSegments(segments);
+  const pieces = [];
+  let base = 0;
+  for (const r of Array.isArray(kept) ? kept : []) {
+    for (const s of segs) {
+      const a = Math.max(r.start, s.start), b = Math.min(r.end, s.end);
+      if (b - a > 1e-6) pieces.push({ s, a, b, o0: base + (a - r.start), o1: base + (b - r.start) });
+    }
+    base += r.end - r.start;
+  }
+  pieces.forEach((p, k) => {
+    const prev = pieces[k - 1], next = pieces[k + 1];
+    p.xin = prev && Math.abs(p.o0 - prev.o1) < 1e-6 ? crossfade : 0;
+    p.xout = next && Math.abs(next.o0 - p.o1) < 1e-6 ? crossfade : 0;
+  });
+  return pieces;
+}
+
+/** Every output time at which clip time `local` of `asset` plays (a clip can appear more than once). */
+export function clipToSequence(segments, asset, local) {
+  const out = [];
+  for (const s of sequenceSegments(segments)) {
+    if (s.asset !== asset) continue;
+    const r = segmentSourceRange(s);
+    if (local >= r.start && local < r.end) out.push(s.start + (local - r.start) / segmentSpeed(s));
+  }
+  return out;
+}
+
+/** Lay segments end to end from 0 in the given order, keeping each one's length. Returns new objects. */
+export function packSegments(segments) {
+  let t = 0;
+  return segments.map((s) => {
+    const len = s.end - s.start;
+    const out = { ...s, start: r6(t), end: r6(t + len) };
+    t += len;
+    return out;
+  });
+}
+
+const cloneJSON = (x) => JSON.parse(JSON.stringify(x));
+
+/** Move timeline items (and keyframes) of `edit` with a time map f(t); drop items shorter than minLen. */
+function remapTimeline(edit, f, { minLen = 0.05, span = null } = {}) {
+  for (const k of TIMELINE_LISTS) {
+    if (!Array.isArray(edit[k])) continue;
+    edit[k] = edit[k].filter((it) => it && Number.isFinite(it.start) && Number.isFinite(it.end)).map((it) => {
+      const o = { ...it };
+      const [a, b] = span ? span(it) : [f(it.start), f(it.end)];
+      o.start = r6(a); o.end = r6(b);
+      if (Array.isArray(it.keyframes)) o.keyframes = it.keyframes.map((kf) => ({ ...kf, t: r6(span ? kf.t + (o.start - it.start) : f(kf.t)) }));
+      return o;
+    }).filter((it) => it.end - it.start >= minLen);
+  }
+  if (Array.isArray(edit.chapters)) edit.chapters = edit.chapters.map((c) => ({ ...c, start: r6(f(c.start)) }));
+  if (edit.brand?.lowerThird && Number.isFinite(edit.brand.lowerThird.start)) edit.brand = { ...edit.brand, lowerThird: { ...edit.brand.lowerThird, start: r6(f(edit.brand.lowerThird.start)) } };
+  const tr = edit.captions?.translations;
+  if (tr && typeof tr === 'object') {
+    const next = {};
+    for (const [lang, list] of Object.entries(tr)) next[lang] = (Array.isArray(list) ? list : []).map((c) => ({ ...c, start: r6(f(c.start)), end: r6(f(c.end)) })).filter((c) => c.end - c.start >= minLen);
+    edit.captions = { ...edit.captions, translations: next };
+  }
+  return edit;
+}
+
+/**
+ * Move timeline items that start at or after output time `at` by `delta` seconds (and keyframes with them), for
+ * edits that grow or insert into a multi-clip sequence. Items that start before `at` keep their place. Returns a new
+ * edit.
+ */
+export function shiftTimeline(edit, at, delta) {
+  const out = cloneJSON(edit);
+  if (!delta) return out;
+  return remapTimeline(out, (t) => (t >= at - 1e-9 ? t + delta : t), { span: (it) => (it.start >= at - 1e-9 ? [it.start + delta, it.end + delta] : [it.start, it.end]) });
+}
+
+/**
+ * Move segment `from` to position `to` (indices into the sorted segments) and lay the sequence out again. Timeline
+ * items that start inside a segment travel with it (clamped to it); words need nothing (they're in clip time).
+ * Returns a new edit.
+ */
+export function reorderSegments(edit, from, to) {
+  const out = cloneJSON(edit);
+  const old = sequenceSegments(out.segments);
+  if (from < 0 || from >= old.length || to < 0 || to >= old.length || from === to) return out;
+  const order = old.slice();
+  const [moved] = order.splice(from, 1);
+  order.splice(to, 0, moved);
+  const packed = packSegments(order);
+  const byId = new Map(packed.map((s) => [s.id, s]));
+  const seat = (t) => { const i = segmentIndexAt(old, t); return i < 0 ? null : old[i]; };
+  remapTimeline(out, (t) => { const s = seat(t); return s ? t + byId.get(s.id).start - s.start : t; }, {
+    span: (it) => {
+      const s = seat(it.start);
+      if (!s) return [it.start, it.end];
+      const d = byId.get(s.id).start - s.start;
+      return [it.start + d, Math.min(it.end, s.end) + d];
+    },
+  });
+  out.segments = [...packed, ...(Array.isArray(out.segments) ? out.segments.filter((s) => !(s && s.asset)) : [])];
+  return out;
+}
+
+/**
+ * Remove output ranges from a multi-clip edit (a ripple): segments are trimmed or split (sourceIn follows the speed),
+ * later segments and timeline items move earlier, items inside a removed range shrink or go. Words stay as they are
+ * (clip time). Returns a new edit.
+ */
+export function rippleDelete(edit, ranges) {
+  const out = cloneJSON(edit);
+  const total = sequenceDuration(out.segments);
+  const cuts = mergeRanges((ranges || []).map((r) => clampRange(r, total)), 1e-6).filter((r) => r.end - r.start >= 1e-4);
+  if (!cuts.length) return out;
+  const f = (t) => {
+    let removed = 0;
+    for (const c of cuts) {
+      if (t >= c.end) removed += c.end - c.start;
+      else if (t > c.start) return c.start - removed;
+      else break;
+    }
+    return t - removed;
+  };
+  const ids = new Set(sequenceSegments(out.segments).map((s) => s.id));
+  const pieces = [];
+  for (const s of sequenceSegments(out.segments)) {
+    const sp = segmentSpeed(s);
+    const local = cuts.filter((c) => c.end > s.start && c.start < s.end).map((c) => ({ start: c.start - s.start, end: c.end - s.start }));
+    let n = 0;
+    for (const k of keptRanges(local, s.end - s.start)) {
+      let id = s.id;
+      if (n > 0) { let j = n; while (ids.has(`${s.id}.${j}`)) j++; id = `${s.id}.${j}`; ids.add(id); }
+      n++;
+      pieces.push({ ...s, id, sourceIn: r6(s.sourceIn + k.start * sp), start: r6(f(s.start + k.start)), end: r6(f(s.start + k.end)) });
+    }
+  }
+  remapTimeline(out, f);
+  out.segments = [...packSegments(pieces), ...(Array.isArray(out.segments) ? out.segments.filter((s) => !(s && s.asset)) : [])];
+  return out;
+}
+
+/**
+ * Clip words laid out on the output timeline, in sequence order: each word of a segment's clip whose middle falls in
+ * the part the segment plays, with output times. ids become `<word id>@<segment id>` (a clip can play twice);
+ * src / seg / clip point back to where it came from.
+ */
+export function sequenceWords(words, segments) {
+  const byClip = new Map();
+  for (const w of Array.isArray(words) ? words : []) {
+    if (!w || typeof w.clip !== 'string') continue;
+    if (!byClip.has(w.clip)) byClip.set(w.clip, []);
+    byClip.get(w.clip).push(w);
+  }
+  for (const list of byClip.values()) list.sort((a, b) => a.start - b.start);
+  const out = [];
+  for (const s of sequenceSegments(segments)) {
+    const sp = segmentSpeed(s), r = segmentSourceRange(s);
+    for (const w of byClip.get(s.asset) || []) {
+      const mid = (w.start + w.end) / 2;
+      if (mid < r.start || mid >= r.end) continue;
+      const { deleted, retake, ...rest } = w;
+      out.push({ ...rest, id: `${w.id}@${s.id}`, src: String(w.id), seg: s.id, start: r6(s.start + (Math.max(w.start, r.start) - r.start) / sp), end: r6(s.start + (Math.min(w.end, r.end) - r.start) / sp) });
+    }
+  }
+  return out;
+}
+
+/** Output-time words (e.g. a transcript of the whole sequence) back to clip words, by the segment under each middle. */
+export function toClipWords(words, segments) {
+  const sorted = sequenceSegments(segments);
+  const out = [];
+  const seen = new Set();
+  for (const w of Array.isArray(words) ? words : []) {
+    if (!w) continue;
+    const i = segmentIndexAt(sorted, (w.start + w.end) / 2);
+    if (i < 0) continue;
+    const s = sorted[i], sp = segmentSpeed(s);
+    const { deleted, retake, seg, src, ...rest } = w;
+    const start = r6(s.sourceIn + (w.start - s.start) * sp), end = r6(s.sourceIn + (w.end - s.start) * sp);
+    const key = `${s.asset}\u0000${Math.round(start * 100)}\u0000${w.text}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ ...rest, id: src != null ? String(src) : String(w.id ?? `w${out.length}`), clip: s.asset, start, end });
+  }
+  return out;
+}
+
+/** The editable view of a multi-clip edit: words on the output timeline, no cuts, no range. */
+export function sequenceView(edit) {
+  const v = cloneJSON(edit);
+  v.words = sequenceWords(edit.words, edit.segments);
+  v.cuts = [];
+  v.range = null;
+  return v;
+}
+
+const WORD_PROPS = ['text', 'speaker', 'filler', 'confidence'];
+/**
+ * Fold an edited view (see sequenceView) back into the multi-clip edit: deleted words, new cuts and a range become a
+ * ripple delete of those output ranges; text, speaker, filler and confidence changes go back to the clip words.
+ * When the view's words were replaced (a fresh transcript of the sequence) they become clip words, and clip words
+ * outside every segment are kept. Other fields are taken from the view. Returns a new edit.
+ */
+export function foldSequenceView(edit, view) {
+  const total = sequenceDuration(view.segments);
+  const vw = Array.isArray(view.words) ? view.words : [];
+  const ranges = computeCuts({ words: vw, cuts: view.cuts || [], range: view.range || null }, total);
+  let words;
+  if (vw.every((w) => w && w.src != null && typeof w.clip === 'string' && w.seg != null)) {
+    const keyOf = (w) => `${w.clip}\u0000${w.id}`;
+    const orig = new Map((edit.words || []).map((w) => [keyOf(w), w]));
+    const next = new Map((edit.words || []).map((w) => [keyOf(w), { ...w }]));
+    for (const w of vw) {
+      const key = `${w.clip}\u0000${w.src}`, o = orig.get(key), n = next.get(key);
+      if (!o) continue;
+      for (const k of WORD_PROPS) if (w[k] !== o[k]) { if (w[k] === undefined) delete n[k]; else n[k] = w[k]; }
+    }
+    words = (edit.words || []).map((w) => next.get(keyOf(w)) || w);
+  } else {
+    const segs = sequenceSegments(view.segments);
+    const inSeq = (w) => segs.some((s) => { const r = segmentSourceRange(s); const m = (w.start + w.end) / 2; return s.asset === w.clip && m >= r.start && m < r.end; });
+    words = [...(edit.words || []).filter((w) => w && typeof w.clip === 'string' && !inSeq(w)), ...toClipWords(vw, segs)]
+      .sort((a, b) => (a.clip < b.clip ? -1 : a.clip > b.clip ? 1 : a.start - b.start));
+  }
+  const out = { ...cloneJSON(view), words, cuts: [], range: null };
+  return ranges.length ? rippleDelete(out, ranges) : out;
+}
+
+/**
+ * Long pauses between words inside each segment (output time), shortened to `keep` like detectWordSilences. Unlike
+ * it, the stretches before a segment's first word and after its last are never cut: a clip edge is a deliberate cut,
+ * and a clip without speech (B-roll, a photo) is not a pause.
+ */
+export function sequenceSilences(words, segments, { minGap = 0.75, keep = 0.25 } = {}) {
+  const out = [];
+  const half = keep / 2;
+  const live = (Array.isArray(words) ? words : []).filter((w) => w && !w.deleted);
+  for (const s of sequenceSegments(segments)) {
+    const inSeg = live.filter((w) => (w.seg != null ? w.seg === s.id : w.start >= s.start && w.end <= s.end)).sort((a, b) => a.start - b.start);
+    for (let i = 1; i < inSeg.length; i++) {
+      const gap = inSeg[i].start - inSeg[i - 1].end;
+      if (gap >= minGap) out.push({ start: inSeg[i - 1].end + half, end: inSeg[i].start - half, kind: 'silence' });
+    }
+  }
+  return out.filter((r) => r.end - r.start >= MIN_RANGE);
+}
+
+/**
+ * A per-clip signal sampled at `rate` per second (peaks, 16 kHz PCM …) laid out on the output timeline: for each
+ * output sample, the clip sample under it (nearest; speed respected). signals: { [clipId]: Float32Array }.
+ */
+export function sequenceSignal(segments, signals, rate) {
+  const sorted = sequenceSegments(segments);
+  const out = new Float32Array(Math.ceil(sequenceDuration(sorted) * rate));
+  for (const s of sorted) {
+    const sig = signals?.[s.asset];
+    if (!sig) continue;
+    const sp = segmentSpeed(s);
+    const i0 = Math.round(s.start * rate), i1 = Math.min(out.length, Math.round(s.end * rate));
+    for (let i = i0; i < i1; i++) {
+      const j = Math.round((s.sourceIn + (i / rate - s.start) * sp) * rate);
+      if (j >= 0 && j < sig.length) out[i] = sig[j];
+    }
+  }
+  return out;
+}
+
+/** Per-clip timed events ([{ t, … }] in clip seconds) on the output timeline. eventsByClip: { [clipId]: events }. */
+export function sequenceEvents(segments, eventsByClip) {
+  const out = [];
+  for (const s of sequenceSegments(segments)) {
+    const sp = segmentSpeed(s), r = segmentSourceRange(s);
+    for (const e of eventsByClip?.[s.asset] || []) if (e.t >= r.start && e.t < r.end) out.push({ ...e, t: r6(s.start + (e.t - r.start) / sp) });
+  }
+  return out.sort((a, b) => a.t - b.t);
+}

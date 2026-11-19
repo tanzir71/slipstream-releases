@@ -191,6 +191,17 @@ function normPosition(p) {
   return undefined;
 }
 
+/** A source crop [x, y, w, h] (fractions, clamped inside the frame) from an array or {x, y, w|width, h|height}; else undefined. */
+function normCrop(c) {
+  let v;
+  if (Array.isArray(c) && c.length >= 4) v = c.slice(0, 4).map(toNum);
+  else if (isObj(c)) v = [toNum(c.x), toNum(c.y), toNum(pick(c, 'w', 'width')), toNum(pick(c, 'h', 'height'))];
+  if (!v || v.some((n) => n === undefined)) return undefined;
+  const x = clamp(v[0], 0, 1), y = clamp(v[1], 0, 1);
+  const w = clamp(v[2], 0, 1 - x), h = clamp(v[3], 0, 1 - y);
+  return w > 0 && h > 0 ? [round6(x), round6(y), round6(w), round6(h)] : undefined;
+}
+
 /** {x, y} from {x, y} or [x, y] (CGPoint encodes as an array). */
 function point(p) {
   if (Array.isArray(p) && p.length >= 2) return { x: toNum(p[0]), y: toNum(p[1]) };
@@ -247,6 +258,7 @@ function normWord(w, i) {
     speaker: str(pick(w, 'speaker', 'speakerId', 'speakerID')),
     retake: str(w.retake),
     confidence: conf === undefined ? undefined : clamp(conf, 0, 1),
+    clip: str(pick(w, 'clip', 'clipId', 'asset')),
   });
 }
 
@@ -293,7 +305,13 @@ function normSegments(list) {
     const sourceOut = toNum(pick(s, 'sourceOut', 'sourceEnd', 'outPoint'));
     if (end === undefined && dur !== undefined) end = start + dur;
     if (end === undefined && sourceOut !== undefined) end = start + (sourceOut - sourceIn);
-    return compact({ id: str(s.id) ?? `seg${i + 1}`, sourceIn, start, end, isGap: bool(s.isGap), track: int(s.track) });
+    const speed = toNum(s.speed);
+    return compact({
+      id: str(s.id) ?? `seg${i + 1}`, sourceIn, start, end, isGap: bool(s.isGap), track: int(s.track),
+      // Multi-clip projects (AE-01): which clip plays, how fast, reframing per aspect, photo push-in, lock.
+      asset: str(pick(s, 'asset', 'assetId', 'assetID', 'clip')), speed: speed > 0 ? clamp(speed, 0.88, 1.12) : undefined,
+      crops: isObj(s.crops) ? s.crops : undefined, photoMotion: isObj(s.photoMotion) || s.photoMotion === null ? s.photoMotion : undefined, locked: bool(s.locked),
+    });
   });
   // Segments without a length run to the next segment on the same track.
   for (const s of segs) {
@@ -351,12 +369,42 @@ function metaOf(m) {
 // ---------------------------------------------------------------------------------------------------------
 // Web <-> v2
 
+/** True for a multi-clip plan or web edit: clips plus at least one segment that plays one of them (AE-01). */
+export function isMultiClip(segments, clips) {
+  return arr(clips).some(isObj) && arr(segments).some((s) => isObj(s) && typeof s.asset === 'string' && s.asset !== '');
+}
+
+const CLIP_KEYS = ['kind', 'name', 'type', 'duration', 'width', 'height', 'fps', 'hasAudio', 'hasVideo', 'hash', 'sha256'];
+/**
+ * v2 sources.clips from the web media record's clips ([{ id, name, type, kind, duration, width, height, hasAudio, … }]).
+ * Paths, media keys and hashes from an earlier plan (`base`) are kept; new clips get media/clips/<id>.<ext>.
+ */
+function webClips(m, base, projectId) {
+  const prev = new Map(arr(base.clips).filter(isObj).map((c) => [String(c.id), c]));
+  return arr(m.clips).filter((c) => isObj(c) && c.id != null && c.id !== '').map((c) => {
+    const id = String(c.id), b = prev.get(id) || {};
+    const out = { ...b, id };
+    if (projectId) out.media = `${projectId}:clip-${id}`;
+    out.path = b.path || `media/clips/${id}${extFrom({ mime: c.type, name: c.name }) || (c.kind === 'photo' ? '.jpg' : '')}`;
+    for (const k of CLIP_KEYS) if (c[k] !== undefined && c[k] !== null) out[k] = c[k];
+    return out;
+  });
+}
+
 /** v2 sources from the web media record. `media.sources` (set by fromV2) carries paths and hashes through. */
-function webSources(m) {
+function webSources(m, projectId) {
   const base = isObj(m.sources) ? m.sources : {};
   const screen = { ...(isObj(base.screen) ? base.screen : {}) };
   screen.path = screen.path || `media/screen${extFrom({ ext: m.screenExt ?? m.ext, mime: m.screenType ?? m.mime ?? m.type, name: m.screenName ?? m.fileName ?? m.name })}`;
   for (const k of ['duration', 'width', 'height', 'hasAudio', 'hasVideo']) if (m[k] !== undefined && m[k] !== null) screen[k] = m[k];
+  // Multi-clip projects (AE-01): sources.screen describes the first clip, for readers without clip support.
+  const clips = webClips(m, base, projectId);
+  if (clips.length) {
+    const first = clips[0];
+    screen.path = first.path;
+    for (const k of ['duration', 'width', 'height', 'hasAudio', 'hasVideo']) { if (first[k] !== undefined) screen[k] = first[k]; else delete screen[k]; }
+    if (first.sha256) screen.sha256 = first.sha256;
+  }
   const hasCam = m.camera !== undefined ? !!m.camera : isObj(base.camera);
   let camera = null;
   if (hasCam) {
@@ -371,6 +419,7 @@ function webSources(m) {
     .map((a) => compact({ id: String(a.id), name: str(a.name), path: str(a.path) || `media/angle-${a.id}${extFrom({ mime: a.type, name: a.name })}`, offset: toNum(a.offset), speaker: str(a.speaker) }));
   if (angles.length) out.angles = angles;
   else if (Array.isArray(base.angles)) out.angles = base.angles;
+  if (clips.length) out.clips = clips;
   return out;
 }
 
@@ -386,7 +435,7 @@ export function toV2(edit, media = null, meta = null) {
   const plan = { version: PLAN_VERSION, app: { name: 'Slipstream Web', surface: 'web' } };
   const mt = metaOf(meta);
   if (mt) plan.meta = mt;
-  plan.sources = webSources(m);
+  plan.sources = webSources(m, mt?.id ?? (isObj(meta) ? str(meta.id) : undefined));
   plan.words = arr(e.words).map((w, i) => ({ ...w, id: str(w.id) ?? `w${i}` }));
   if (e.speakers !== undefined) plan.speakers = e.speakers;
   plan.cuts = arr(e.cuts).map((c) => ({ ...c, ...(c.id !== undefined ? { id: String(c.id) } : {}), kind: CUT_KINDS.has(c.kind) ? c.kind : 'manual' }));
@@ -444,8 +493,20 @@ export function fromV2(plan) {
       ...sources.angles.map((a) => compact({ id: a.id, name: a.name, offset: a.offset ?? 0, speaker: a.speaker, path: a.path })),
     ];
   }
+  // Multi-clip projects (AE-01): the clips are web media too; the project lasts as long as its segments.
+  if (Array.isArray(sources.clips) && sources.clips.length) {
+    media.clips = sources.clips.filter(isObj).map((c) => {
+      const out = { id: String(c.id) };
+      for (const k of CLIP_KEYS) if (c[k] !== undefined && c[k] !== null) out[k] = c[k];
+      return out;
+    });
+    if (isMultiClip(p.segments, sources.clips)) media.duration = round6(Math.max(0, ...arr(p.segments).filter((s) => isObj(s) && Number.isFinite(s.end)).map((s) => s.end)));
+  }
   // Keep paths, hashes and desktop source details only when the web record can't regenerate them.
-  if (!sameJSON(webSources(media), sources)) media.sources = sources;
+  const pid = isObj(p.meta) ? str(p.meta.id) : undefined;
+  const regen = webSources(media, pid);
+  if (regen.clips && Array.isArray(sources.clips) && !sources.clips.some((c) => isObj(c) && c.media)) regen.clips = regen.clips.map(({ media: _m, ...c }) => c);
+  if (!sameJSON(regen, sources)) media.sources = sources;
   return { edit, media, meta: isObj(p.meta) ? p.meta : {} };
 }
 
@@ -486,6 +547,10 @@ function stagingToStyle(st, reference, d) {
     scale: toNum(st.scale) > 0 ? toNum(st.scale) : undefined,
     offsetX: toFraction(st.offsetX, reference),
     offsetY: toFraction(st.offsetY, reference),
+    // E-01: full screen or on a background.
+    frame: st.frame === 'full' || st.frame === 'background' ? st.frame : undefined,
+    fit: st.fit === 'fill' || st.fit === 'fit' ? st.fit : undefined,
+    followCursor: bool(st.followCursor),
   });
 }
 
@@ -609,6 +674,10 @@ export function fromEngineV1(enginePlan, { reference = DEFAULT_REFERENCE } = {})
   plan.frame = { aspect: normAspect(frame.aspect) };
   const reframe = normReframe(frame.reframe, frame.focusPath);
   if (reframe) plan.frame.reframe = reframe;
+  const crop = normCrop(frame.crop);
+  if (crop) plan.frame.crop = crop;
+  if (Array.isArray(e.frameSections) && e.frameSections.length) plan.frameSections = e.frameSections;
+  if (Array.isArray(src.clips) && src.clips.length) sources.clips = src.clips.filter(isObj);
   plan.layout = cameraToLayout(isObj(e.camera) ? e.camera : {}, !!sources.camera, reference, d.layout);
   plan.style = stagingToStyle(isObj(frame.staging) ? frame.staging : {}, reference, d.style);
   plan.captions = captionsFrom(cap, cap, d.captions, cues(cap.cues));
@@ -683,10 +752,14 @@ export function toEngine(plan, { units = 'fraction', reference = DEFAULT_REFEREN
         offsetX: style.offsetX ?? 0,
         offsetY: style.offsetY ?? 0,
         shadow: style.shadow,
+        frame: style.frame,
+        fit: style.fit,
+        followCursor: style.followCursor,
       }),
+      crop: normCrop(p.frame?.crop),
     },
-    words: arr(p.words).map((w) => ({ id: engineId(w.id), text: w.text, start: w.start, end: w.end, isCut: !!w.deleted })),
-    segments: arr(p.segments).map((s) => compact({ id: s.id, sourceIn: s.sourceIn, start: s.start, end: s.end, isGap: s.isGap, track: s.track })),
+    words: arr(p.words).map((w) => compact({ id: engineId(w.id), text: w.text, start: w.start, end: w.end, isCut: !!w.deleted, clip: w.clip })),
+    segments: arr(p.segments).map((s) => compact({ id: s.id, sourceIn: s.sourceIn, start: s.start, end: s.end, isGap: s.isGap, track: s.track, asset: s.asset, speed: s.speed, crops: s.crops, photoMotion: s.photoMotion, locked: s.locked })),
     manualCuts,
     zooms: arr(p.zooms).map((z) => compact({ id: z.id, startTime: z.start, endTime: z.end, focus: { x: z.x, y: z.y }, scale: z.scale, ramp: z.ramp, auto: z.auto, follow: z.follow })),
     camera: compact({
@@ -716,7 +789,8 @@ export function toEngine(plan, { units = 'fraction', reference = DEFAULT_REFEREN
     focusKeyframes: arr(p.focusKeyframes),
   };
   if (p.cursor) out.cursor = p.cursor;
-  for (const k of ['masks', 'annotations']) if (Array.isArray(p[k]) && p[k].length) out[k] = p[k];
+  for (const k of ['masks', 'annotations', 'frameSections']) if (Array.isArray(p[k]) && p[k].length) out[k] = p[k];
+  if (Array.isArray(sources.clips) && sources.clips.length) out.source.clips = sources.clips;
   return out;
 }
 

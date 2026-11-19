@@ -1,8 +1,9 @@
 // Desktop bridge (ticket T-07). In the Slipstream desktop app (Tauri, Windows/Linux) the web editor runs unchanged
 // and gains native features through `desktop`: native save/open dialogs and project folders, export and
 // transcription through the local engine (hardware encoders, whisper.cpp), the recorder's tray and global shortcut,
-// a capture-excluded teleprompter, pointer and click sampling during a take, updates, and CORS-free requests to the
-// user's own cloud provider.
+// a capture-excluded teleprompter, pointer and click sampling during a take, the minimal recorder's display / window /
+// area pickers and capture-excluded overlays (pill, corner marks, countdown) with the tray mirroring the pill,
+// updates, and CORS-free requests to the user's own cloud provider.
 //
 // In a browser `desktop.available` is false and every method rejects (event subscriptions are no-ops), so the web app
 // can branch on `desktop.available` and is otherwise unaffected. This module has no imports and no side effects.
@@ -66,6 +67,7 @@ async function job(cmd, args, { onProgress, signal } = {}) {
 }
 
 const baseName = (p) => String(p).split(/[\\/]/).pop();
+const roundRect = (r) => ({ x: Math.round(r?.x || 0), y: Math.round(r?.y || 0), w: Math.max(1, Math.round(r?.w || 0)), h: Math.max(1, Math.round(r?.h || 0)) });
 const extOf = (name) => (/\.([a-z0-9-]+)$/i.exec(name || '')?.[1] || '').toLowerCase();
 const MIME = { mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', mkv: 'video/x-matroska', m4a: 'audio/mp4', mp3: 'audio/mpeg', wav: 'audio/wav', srt: 'application/x-subrip', vtt: 'text/vtt', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', slipstream: 'application/zip', json: 'application/json' };
 const LABEL = { mp4: 'MP4 video', mov: 'QuickTime video', webm: 'WebM video', gif: 'GIF', srt: 'SubRip subtitles', vtt: 'WebVTT subtitles', slipstream: 'Slipstream project', 'slipstream-brand': 'Slipstream brand kit', fcpxml: 'Final Cut Pro XML', xml: 'Premiere / Resolve XML', edl: 'Edit decision list', wav: 'WAV audio', m4a: 'M4A audio', jpg: 'JPEG image', png: 'PNG image', zip: 'Zip archive' };
@@ -384,6 +386,40 @@ const api = {
      * several monitors had the captured size and the one with the clicks was picked.
      */
     stop: () => invoke('cursor_stop'),
+  },
+  /**
+   * Choosing what to record (T-11). Rectangles are { x, y, w, h } in virtual-desktop physical pixels.
+   */
+  capture: {
+    /**
+     * { displays: [{ id, name, rect, work, scale, primary }], windows: [{ id, title, app, rect, minimized }] (top-most
+     * first), windowsSupported (false on Wayland: the portal picks), reason, excludedFromCapture }.
+     */
+    targets: () => invoke('capture_targets'),
+    /** A PNG data URL of a window (search sheet), or null. */
+    thumbnail: (id, { width, height } = {}) => invoke('window_thumbnail', { id: String(id), maxWidth: width ?? null, maxHeight: height ?? null }),
+    focus: (id) => invoke('window_focus', { id: String(id) }),
+    windowRect: (id) => invoke('window_rect', { id: String(id) }),
+    /** Size preset: the window's visible frame becomes width × height (centred, on its display). Resolves its new rect. */
+    resizeWindow: (id, width, height) => invoke('window_resize', { id: String(id), width: Math.round(width), height: Math.round(height) }),
+    /** Put back a window a size preset changed (also done when the take ends or the app quits). */
+    restoreWindow: () => invoke('window_restore'),
+  },
+  /**
+   * The recording overlays (T-11): 'pill', 'marks', 'countdown', 'picker' — transparent, always-on-top windows kept
+   * out of screen captures on Windows (not possible on Linux). The take broadcasts its state; the overlays and the
+   * tray send actions back.
+   */
+  overlay: {
+    /** Open or move an overlay; params go to its page. Resolves { label, excludedFromCapture }. */
+    open: (kind, rect, params = null) => invoke('rec_overlay_open', { kind, rect: roundRect(rect), params }),
+    move: (kind, rect) => invoke('rec_overlay_move', { kind, rect: roundRect(rect) }),
+    /** Close one overlay, or 'all'. */
+    close: (kind = 'all') => invoke('rec_overlay_close', { kind }),
+    /** { phase, time, level, muted, hasMic, cameraOn, hasCamera, nudge, confirm } → pill, marks, countdown and tray. */
+    broadcast: (state) => invoke('rec_broadcast', { payload: state }),
+    /** cb({ action, data }): pill buttons, tray items, Alt+Shift+P / M, the countdown and the pickers. */
+    onControl: (cb) => on('desktop://rec-control', cb),
   },
   window: {
     minimize: () => T.window.getCurrentWindow().minimize(),

@@ -2,9 +2,8 @@
 import { h, $, icon, fmtTime, fmtBytes, toast, confirmDialog, toggle, modal, fill } from './ui.js';
 import {
   listProjects, getProject, saveProject, deleteProject, putMedia, getMedia, storageInfo, requestPersistence,
-  projectSize, orphanMedia, removeMediaDir, saveJournal, deleteJournal, listJournals, deleteChunks,
+  projectSize, orphanMedia, removeMediaDir, deleteJournal, listJournals, deleteChunks,
 } from './store.js';
-import { createSinks } from './rec-sinks.js';
 import { repairRecording } from './recover.js';
 import { exportBundle, readBundle, matchesRef, isBundleFile, BundleError } from './projects-io.js';
 import { downloadBlob } from './exporter.js';
@@ -14,7 +13,9 @@ import { probe, thumbnail, mixAudioTracks } from './media.js';
 import { positionalWriter, readFile, opfsSupported } from './opfs.js';
 import { defaultEdit, uid } from './edl.js';
 import { openEditor } from './editor.js';
-import { recordingSupported, listDevices, openCamera, openMic, meter, Session, pickDisplay, alignCursor } from './recorder.js';
+import { recordingSupported, alignCursor } from './recorder.js';
+import { mountRecorder, applySourceCrop } from './rec-ui.js';
+import { setScene } from '../../packages/editor-core/src/scenes.js';
 import { compactCursorSamples } from './autozoom.js';
 import { webcodecsVideo, webcodecsAudio } from './media-compat.js';
 import { realtimeSupported } from './exporter-realtime.js';
@@ -57,11 +58,11 @@ window.addEventListener('hashchange', route);
 // ---- Home / library ---------------------------------------------------------------------------
 async function showHome() {
   const caps = capabilities();
-  const fileInput = h('input', { type: 'file', accept: 'video/*,audio/*,.mkv,.mov,.m4a,.mp3,.wav,.slipstream', hidden: true, onchange: (e) => e.target.files[0] && importFile(e.target.files[0]) });
+  const fileInput = h('input', { type: 'file', multiple: true, accept: 'video/*,audio/*,image/*,.mkv,.mov,.m4a,.mp3,.wav,.slipstream', hidden: true, onchange: (e) => importFiles([...e.target.files]) });
   // The desktop app's own dialog gives the file's path, so a Slipstream 1 recording's cursor track comes along.
   const drop = h('button.start-card.drop', { onclick: () => (desktop.available ? pickAndImport() : fileInput.click()) },
     h('span.sc-icon.blue', icon('upload', 22)),
-    h('span.sc-text', h('b', 'Import a video'), h('span', 'Drop a file here, or browse. MP4, MOV, WebM, MKV, audio files and .slipstream projects work.')),
+    h('span.sc-text', h('b', 'Import a video'), h('span', 'Drop a file here, or browse. MP4, MOV, WebM, MKV, audio files and .slipstream projects work. Pick several videos or photos to make one project from them.')),
     h('span.sc-kbd', 'Drop anywhere'));
   const rec = h('button.start-card', { disabled: !caps.record, onclick: () => { location.hash = '#/record'; } },
     h('span.sc-icon.rec-ic', h('i')),
@@ -93,7 +94,7 @@ async function showHome() {
     h('section.recent', h('div.recent-head', h('h2', 'Projects'), h('span.muted.small', 'Saved in this browser only')), grid));
   root.replaceChildren(el);
 
-  const onDrop = (e) => { e.preventDefault(); document.body.classList.remove('dragging'); const f = e.dataTransfer.files[0]; if (f) importFile(f); };
+  const onDrop = (e) => { e.preventDefault(); document.body.classList.remove('dragging'); importFiles([...e.dataTransfer.files]); };
   const onOver = (e) => { e.preventDefault(); document.body.classList.add('dragging'); };
   const onLeave = (e) => { if (!e.relatedTarget) document.body.classList.remove('dragging'); };
   const onKey = (e) => { if (e.key.toLowerCase() === 'r' && !e.target.closest('input,textarea') && caps.record) location.hash = '#/record'; };
@@ -186,10 +187,29 @@ async function openBundleFile(file, { verify = true } = {}) {
   try {
     const b = await readBundle(file, { verify });
     let { screen, camera } = b.media;
+    const clipFiles = { ...(b.clips || {}) };
     for (const ref of b.external) {
       const picked = await pickForRef(ref);
       if (!picked) throw new Error('The project needs its recording to open.');
-      if (ref.role === 'camera') camera = picked; else screen = picked;
+      if (ref.role === 'clip') clipFiles[ref.id] = picked;
+      else if (ref.role === 'camera') camera = picked; else screen = picked;
+    }
+    // Multi-clip projects (AE-01): every clip becomes project media; the plan's sequence opens as it was.
+    if (b.clipList?.length) {
+      const missing = b.clipList.filter((c) => !clipFiles[c.id]);
+      if (missing.length) throw new Error(`This project is missing ${missing.length === 1 ? `the clip ${missing[0].name || missing[0].id}` : `${missing.length} clips`}.`);
+      const p = await createClipsProject({ name: b.name, files: b.clipList.map((c) => clipFiles[c.id]), clipIds: b.clipList.map((c) => c.id), photoSeconds: b.clipList.map((c) => c.duration), edit: b.edit });
+      for (const [key, blob] of Object.entries(b.assets || {})) {
+        await putMedia(`${p.id}:${key}`, blob);
+        if (key === 'logo') { p.media.logo = true; p.media.logoType = blob.type; }
+        if (key === 'intro' || key === 'outro') { p.media[key] = true; p.media[`${key}Type`] = blob.type; }
+        if (key === 'music' && p.edit.music) p.edit.music.type = blob.type || p.edit.music.type;
+      }
+      for (const it of p.edit.broll || []) if (b.assets?.[`broll-${it.id}`]) it.type = b.assets[`broll-${it.id}`].type;
+      await saveProject(p);
+      toast(`Opened “${b.name}”`, 'ok');
+      location.hash = `#/edit/${encodeURIComponent(p.id)}`;
+      return;
     }
     if (!screen) throw new Error('This project has no screen recording.');
     // Desktop app: recordings this webview can't decode (HEVC/ProRes from a Mac, …) get preview copies.
@@ -319,6 +339,102 @@ async function createProject({ id = uid('p'), name, screen, camera = null, camer
   return project;
 }
 
+// ---- Multi-clip projects (AE-01) ----------------------------------------------------------------------
+const PHOTO_SECONDS = 3;
+const isPhotoFile = (f) => /^image\//.test(f.type || '') || /\.(png|jpe?g|webp|gif|avif)$/i.test(f.name || '');
+
+/** Several files at once make one project with a clip each; one file keeps the usual single-recording path. */
+async function importFiles(files) {
+  files = files.filter(Boolean);
+  if (!files.length) return;
+  const bundle = files.find((f) => isBundleFile(f));
+  if (files.length === 1 || bundle) {
+    if (bundle && files.length > 1) toast('Opening the project file only. Import videos and photos on their own.', 'info', 5000);
+    return importFile(bundle || files[0]);
+  }
+  const busy = h('div.busy-overlay', h('div.busy-card', h('div.spinner'), h('p', `Opening ${files.length} files…`)));
+  document.body.append(busy);
+  try {
+    const p = await createClipsProject({ name: `${files[0].name.replace(/\.[^.]+$/, '')} and ${files.length - 1} more`, files, onProgress: (i) => { busy.querySelector('p').textContent = `Opening ${files[i].name} (${i + 1} of ${files.length})…`; } });
+    location.hash = `#/edit/${encodeURIComponent(p.id)}`;
+  } catch (err) {
+    toast(err.message, 'error', 7000);
+  } finally {
+    busy.remove();
+  }
+}
+
+/** First frame of a photo or video as a JPEG data URL, for the project card. */
+async function clipThumb(file, clip) {
+  if (clip.kind === 'photo') {
+    const bmp = await createImageBitmap(file).catch(() => null);
+    if (!bmp) return null;
+    const c = document.createElement('canvas');
+    c.width = 480; c.height = Math.round((480 * bmp.height) / Math.max(1, bmp.width));
+    c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+    bmp.close?.();
+    return c.toDataURL('image/jpeg', 0.72);
+  }
+  return clip.hasVideo ? thumbnail(file, Math.min(1.5, (clip.duration || 0) / 3)) : null;
+}
+
+/**
+ * A multi-clip project: each file is a clip (`<id>:clip-<clipId>` in storage, project.media.clips) and
+ * edit.segments plays them end to end in the order given. Photos hold for PHOTO_SECONDS. Opened from a bundle,
+ * `edit` (with its own segments) and `clipIds` come from the plan.
+ */
+async function createClipsProject({ id = uid('p'), name, files, clipIds = null, photoSeconds = null, edit: givenEdit = null, onProgress = () => {} }) {
+  const clips = [];
+  for (const [i, file] of files.entries()) {
+    onProgress(i);
+    const cid = clipIds?.[i] || `c${i + 1}`;
+    if (isPhotoFile(file)) {
+      const bmp = await createImageBitmap(file).catch(() => null);
+      if (!bmp) throw new Error(`Couldn’t read the image ${file.name}.`);
+      clips.push({ id: cid, kind: 'photo', name: file.name || `${cid}.jpg`, type: file.type || 'image/jpeg', width: bmp.width, height: bmp.height, hasAudio: false, hasVideo: true });
+      bmp.close?.();
+    } else {
+      const info = await probe(file);
+      if (!info.duration || !Number.isFinite(info.duration)) throw new Error(`Could not read the duration of ${file.name}.`);
+      if (info.hasVideo && !info.canDecodeVideo && !info.canPlayElement) throw new Error(`This browser can’t decode ${file.name} (${info.videoCodec || 'its video codec'}). Try Chrome or Edge, or convert it to MP4 (H.264).`);
+      clips.push({ id: cid, kind: info.hasVideo ? 'video' : 'audio', name: file.name || `${cid}.mp4`, type: file.type || '', duration: info.duration, width: info.width, height: info.height, hasAudio: info.hasAudio, hasVideo: info.hasVideo, audioChannels: info.audioChannels || 0, ...(info.compat ? { compat: true } : {}) });
+    }
+  }
+  let edit;
+  if (givenEdit) edit = { ...defaultEdit(), ...givenEdit };
+  else {
+    edit = defaultEdit();
+    edit.layout.mode = 'screen';
+    let t = 0;
+    edit.segments = clips.map((c, i) => {
+      const len = c.kind === 'photo' ? (Number(photoSeconds?.[i]) > 0 ? Number(photoSeconds[i]) : PHOTO_SECONDS) : c.duration;
+      const s = { id: `s${i + 1}`, asset: c.id, sourceIn: 0, start: Math.round(t * 1e6) / 1e6, end: Math.round((t + len) * 1e6) / 1e6 };
+      t += len;
+      return s;
+    });
+  }
+  const segs = (edit.segments || []).filter((s) => s && s.asset);
+  const duration = segs.reduce((m, s) => Math.max(m, s.end), 0);
+  const visual = clips.find((c) => c.hasVideo) || clips[0];
+  const project = {
+    id, name, created: Date.now(),
+    media: {
+      duration, width: visual.width || 0, height: visual.height || 0,
+      hasAudio: clips.some((c) => c.hasAudio), hasVideo: clips.some((c) => c.hasVideo), camera: false, cameraOffset: 0,
+      audioChannels: Math.max(0, ...clips.map((c) => c.audioChannels || 0)),
+      screenType: clips[0].type, cameraType: '', screenName: clips[0].name, cameraName: '', compat: clips.some((c) => c.compat),
+      clips,
+    },
+    thumb: await clipThumb(files[clips.indexOf(visual)], visual).catch(() => null),
+    edit,
+    autoPolish: !givenEdit,
+  };
+  for (const [i, file] of files.entries()) await putMedia(`${id}:clip-${clips[i].id}`, file);
+  await saveProject(project);
+  requestPersistence();
+  return project;
+}
+
 /** Desktop app: import through the native open dialog (keeps the path). */
 async function pickAndImport() {
   const info = await desktop.pickFile({ filters: [{ name: 'Video, audio or Slipstream project', extensions: ['mp4', 'mov', 'm4v', 'webm', 'mkv', 'avi', 'm4a', 'mp3', 'wav', 'slipstream'] }], title: 'Import a video' }).catch((err) => { toast(err.message, 'error'); return null; });
@@ -366,7 +482,9 @@ async function showEditor(id) {
   root.replaceChildren(h('div.loading', h('div.spinner'), h('p', 'Opening project…')));
   const project = await getProject(id);
   if (!project) { toast('Project not found in this browser', 'error'); location.hash = '#/'; return; }
-  const [screen, camera] = await Promise.all([getMedia(`${id}:screen`, project.media.screenType), project.media.camera ? getMedia(`${id}:camera`, project.media.cameraType) : null]);
+  // Multi-clip projects (AE-01) have no screen recording of their own: the first clip stands in (the editor loads the rest).
+  const screenKey = project.media.clips?.length ? `${id}:clip-${project.media.clips[0].id}` : `${id}:screen`;
+  const [screen, camera] = await Promise.all([getMedia(screenKey, project.media.screenType), project.media.camera ? getMedia(`${id}:camera`, project.media.cameraType) : null]);
   if (!screen) { toast('Media for this project is missing', 'error'); location.hash = '#/'; return; }
   // Projects written by another surface may only carry the v2 plan (C-01).
   if (!project.edit && project.plan) {
@@ -380,200 +498,51 @@ async function showEditor(id) {
   window.__slipstreamEditor = ed;
 }
 
-// ---- Recorder ---------------------------------------------------------------------------------
-async function showRecorder() {
+// ---- Recorder (W-11 web, T-11 Windows/Linux): the card, pill, pickers and overlays live in rec-ui.js ---------------
+function showRecorder() {
   const caps = capabilities();
   if (!caps.record) { toast('Screen recording is not available in this browser', 'error'); location.hash = '#/'; return; }
-  const st = { display: null, cam: null, mic: null, camId: '', micId: '', systemAudio: true, countdown: true, notes: '', meter: null, session: null, raf: 0 };
-  const screenVideo = h('video.rec-screen', { muted: true, autoplay: true, playsInline: true, hidden: true });
-  const camVideo = h('video.rec-cam', { muted: true, autoplay: true, playsInline: true, hidden: true });
-  const pickBtn = h('button.btn.primary', { onclick: () => choose() }, icon('monitor', 16), 'Choose screen, window or tab');
-  const placeholder = h('div.rec-placeholder', h('span.sc-icon.blue', icon('monitor', 26)), h('p', 'Pick what to record. Your browser will ask which screen, window or tab to share.'), pickBtn);
-  const preview = h('div.rec-preview', placeholder, screenVideo, camVideo);
-  const camSel = h('select', { onchange: (e) => setCam(e.target.value) }, h('option', { value: '' }, 'No camera'));
-  const micSel = h('select', { onchange: (e) => setMic(e.target.value) }, h('option', { value: '' }, 'No microphone'));
-  const level = h('div.level', h('i'));
-  const sourceLabel = h('span.muted.small', 'Nothing selected');
-  const startBtn = h('button.btn.record.wide', { disabled: true, onclick: () => start() }, icon('record', 16), 'Start recording');
-  const notes = h('textarea', { rows: 5, placeholder: 'Optional: paste talking points. They scroll slowly while you record (only you can see them).', oninput: (e) => { st.notes = e.target.value; } });
+  const rec = mountRecorder(root, {
+    onTake: saveTake,
+    onExit: () => { location.hash = '#/'; },
+    startCursor,
+    stopCursor,
+    hold: (id) => { holdRecordingLock(id); window.addEventListener('beforeunload', warnUnload); },
+    release: () => endRecordingGuards(),
+  });
+  recorderToggle = () => rec.toggle();
+  current = { cleanup() { recorderToggle = null; rec.cleanup(); } };
+}
 
-  const side = h('aside.rec-side',
-    h('section', h('h4', icon('monitor', 14), 'Screen'), h('div.row.between', sourceLabel, h('button.btn.small', { onclick: () => choose() }, 'Change')), toggle('Record system / tab audio', st.systemAudio, (v) => { st.systemAudio = v; })),
-    h('section', h('h4', icon('camera', 14), 'Camera'), camSel, h('p.muted.small', 'Recorded as its own layer — change bubble/split layout after.')),
-    h('section', h('h4', icon('mic', 14), 'Microphone'), micSel, level),
-    h('section', h('h4', icon('text', 14), 'Teleprompter'), notes),
-    h('section', toggle('3-second countdown', st.countdown, (v) => { st.countdown = v; })),
-    startBtn,
-    h('p.muted.small.center', icon('lock', 12), 'Recorded straight to this browser’s storage.'));
-
-  const el = h('div.rec',
-    h('header.topbar', h('div.tb-left', h('button.icon-btn', { title: 'Back', onclick: () => { location.hash = '#/'; } }, icon('back')), h('span.tb-title', 'New recording')), h('div.tb-center'), h('div.tb-right')),
-    h('div.rec-grid', preview, side));
-  root.replaceChildren(el);
-
-  async function refreshDevices() {
-    try {
-      const d = await listDevices();
-      camSel.replaceChildren(h('option', { value: '' }, 'No camera'), ...d.cameras.map((c, i) => h('option', { value: c.deviceId, selected: c.deviceId === st.camId }, c.label || `Camera ${i + 1}`)));
-      micSel.replaceChildren(h('option', { value: '' }, 'No microphone'), ...d.mics.map((c, i) => h('option', { value: c.deviceId, selected: c.deviceId === st.micId }, c.label || `Microphone ${i + 1}`)));
-      if (!d.labelled) {
-        camSel.append(h('option', { value: '__ask' }, 'Allow camera access…'));
-        micSel.append(h('option', { value: '__ask' }, 'Allow microphone access…'));
-      }
-    } catch { /* ignore */ }
-  }
-  async function setCam(id) {
-    st.cam?.getTracks().forEach((t) => t.stop());
-    st.cam = null; st.camId = '';
-    camVideo.hidden = true;
-    if (!id) return;
-    try {
-      st.cam = await openCamera(id === '__ask' ? undefined : id);
-      st.camId = st.cam.getVideoTracks()[0].getSettings().deviceId || id;
-      camVideo.srcObject = st.cam; camVideo.hidden = false;
-      refreshDevices();
-    } catch (err) { toast(`Camera unavailable: ${err.message}`, 'error'); camSel.value = ''; }
-  }
-  async function setMic(id) {
-    st.mic?.getTracks().forEach((t) => t.stop());
-    st.meter?.close(); st.meter = null; st.mic = null; st.micId = '';
-    if (!id) return;
-    try {
-      st.mic = await openMic(id === '__ask' ? undefined : id);
-      st.micId = st.mic.getAudioTracks()[0].getSettings().deviceId || id;
-      st.meter = meter(st.mic);
-      refreshDevices();
-    } catch (err) { toast(`Microphone unavailable: ${err.message}`, 'error'); micSel.value = ''; }
-  }
-  async function choose() {
-    try {
-      const d = await pickDisplay({ systemAudio: st.systemAudio });
-      st.display?.getTracks().forEach((t) => t.stop());
-      st.display = d;
-      screenVideo.srcObject = d;
-      screenVideo.hidden = false;
-      placeholder.hidden = true;
-      const tr = d.getVideoTracks()[0];
-      const s = tr.getSettings();
-      sourceLabel.textContent = `${tr.label || 'Screen'} · ${s.width || '?'}×${s.height || '?'}${d.getAudioTracks().length ? ' · with audio' : ''}`;
-      startBtn.disabled = false;
-      tr.addEventListener('ended', () => { if (!st.session) { placeholder.hidden = false; screenVideo.hidden = true; startBtn.disabled = true; sourceLabel.textContent = 'Nothing selected'; } });
-    } catch (err) { if (err.name !== 'NotAllowedError') toast(err.message, 'error'); }
-  }
-  function loop() {
-    if (st.meter) level.firstChild.style.width = `${Math.round(st.meter.level() * 100)}%`;
-    st.raf = requestAnimationFrame(loop);
-  }
-  loop();
-  refreshDevices();
-
-  async function start() {
-    if (!st.display) return;
-    if (st.countdown) {
-      for (const n of [3, 2, 1]) {
-        const c = h('div.countdown', String(n));
-        document.body.append(c);
-        await new Promise((r) => setTimeout(r, 850));
-        c.remove();
-      }
+/**
+ * A finished take becomes a project: the recording (already on disk when OPFS is available), the camera layer, the
+ * pointer samples, an Area take's source crop and "camera off" stretches as screen-only scenes. Then the editor opens
+ * and auto-polish runs.
+ */
+async function saveTake({ pid, backend, res, cursor, mode, crop, cameraOff }) {
+  const busy = h('div.busy-overlay', h('div.busy-card', h('div.spinner'), h('p', 'Saving recording…')));
+  document.body.append(busy);
+  try {
+    const ext = res.screen.type.includes('mp4') ? 'mp4' : 'webm';
+    const screen = res.stored ? res.screen : new File([res.screen], `screen.${ext}`, { type: res.screen.type });
+    const when = new Date().toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+    const p = await createProject({ id: pid, name: `${mode === 'camera' ? 'Camera recording' : 'Recording'} ${when}`, screen, camera: res.camera, cameraOffset: res.cameraOffset, stored: res.stored, cursor });
+    let changed = false;
+    if (crop) { p.edit = applySourceCrop(p.edit, crop); changed = true; }
+    // Camera only: the camera is the picture, edge to edge (no wallpaper border, corners or shadow).
+    if (mode === 'camera') { p.edit.style = { ...p.edit.style, padding: 0, radius: 0, shadow: 0 }; p.edit.layout = { ...p.edit.layout, fit: 'cover' }; p.media.cameraOnly = true; changed = true; }
+    if (res.camera && cameraOff?.length) {
+      p.edit.scenes = cameraOff.reduce((sc, r) => setScene(sc, r.start, r.end, { mode: 'screen' }), p.edit.scenes || []);
+      changed = true;
     }
-    // Chunks are written to disk every second under the future project id, and a journal entry lets the
-    // next launch offer recovery if this tab dies mid-take (W-02).
-    st.pid = uid('p');
-    const { sinks, backend } = await createSinks(st.pid, { camera: !!st.cam });
-    st.backend = backend;
-    st.session = new Session({ display: st.display, camera: st.cam, mic: st.mic, sinks });
-    st.journal = { id: st.pid, started: Date.now(), backend, hasCamera: !!st.cam, elapsed: 0 };
-    st.session.onstarted = (info) => { Object.assign(st.journal, info); saveJournal(st.journal).catch(() => {}); };
-    holdRecordingLock(st.pid);
-    window.addEventListener('beforeunload', warnUnload);
-    // Desktop app: sample the pointer and clicks so zooms follow what you click (T-04). Not awaited: the take
-    // starts now, and samples from before its first frame are dropped when they're aligned.
-    if (desktop.available) st.cursor = startCursor(st.display);
-    st.session.start();
-    if (desktop.available) {
-      // Desktop app: tray shows the take, the shortcut stops it, and talking points float in a window that
-      // screen capture leaves out (Windows), instead of the panel here.
-      desktop.setRecording(true).catch(() => {});
-      if (st.notes.trim()) st.nativePrompter = await desktop.teleprompter.open(st.notes).then(() => true, () => false);
-    }
-    hud();
-  }
-
-  function hud() {
-    const time = h('span.hud-time', '00:00');
-    const dot = h('span.rec-dot');
-    const pauseBtn = h('button.btn', { onclick: () => { if (st.session.state === 'recording') { st.session.pause(); pauseBtn.replaceChildren(icon('play', 15), 'Resume'); dot.classList.add('paused'); } else { st.session.resume(); pauseBtn.replaceChildren(icon('pause', 15), 'Pause'); dot.classList.remove('paused'); } } }, icon('pause', 15), 'Pause');
-    const stopBtn = h('button.btn.record', { onclick: () => finish() }, icon('stop', 15), 'Stop & edit');
-    const discard = h('button.btn.ghost', { onclick: async () => { if (await confirmDialog('Discard recording?', 'This take will be thrown away.', 'Discard')) { discardTake(); location.hash = '#/'; } } }, icon('trash', 15), 'Discard');
-    const prompter = st.notes.trim() && !st.nativePrompter ? h('div.prompter', h('div.prompter-text', st.notes)) : null;
-    side.replaceChildren(h('div.hud', h('div.hud-top', dot, time), h('p.muted.small', 'Recording. You can also stop from the browser’s “Stop sharing” bar.'), h('div.row', pauseBtn, stopBtn), discard), prompter);
-    st.session.onstop = () => finish();
-    let lastJournal = 0;
-    const tick = () => {
-      if (!st.session || st.session.state === 'stopped') return;
-      time.textContent = fmtTime(st.session.time());
-      if (performance.now() - lastJournal > 5000 && st.journal) { lastJournal = performance.now(); st.journal.elapsed = st.session.time(); saveJournal(st.journal).catch(() => {}); }
-      if (prompter) prompter.firstChild.scrollTop += 0.35;
-      requestAnimationFrame(tick);
-    };
-    tick();
-  }
-
-  let finishing = false;
-  async function finish() {
-    if (finishing || !st.session) return;
-    finishing = true;
-    const busy = h('div.busy-overlay', h('div.busy-card', h('div.spinner'), h('p', 'Saving recording…')));
-    document.body.append(busy);
-    try {
-      const res = await st.session.stop();
-      st.meter?.close();
-      const cursor = await stopCursor(st.cursor, st.session.timeline(), res.duration);
-      st.cursor = null;
-      const ext = res.screen.type.includes('mp4') ? 'mp4' : 'webm';
-      const screen = res.stored ? res.screen : new File([res.screen], `screen.${ext}`, { type: res.screen.type });
-      const p = await createProject({ id: st.pid, name: `Recording ${new Date().toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}`, screen, camera: res.camera, cameraOffset: res.cameraOffset, stored: res.stored, cursor });
-      if (st.backend === 'idb') await deleteChunks(st.pid).catch(() => {});
-      await deleteJournal(st.pid).catch(() => {});
-      endRecordingGuards();
-      st.session = null;
-      location.hash = `#/edit/${encodeURIComponent(p.id)}`;
-    } catch (err) {
-      // The journal stays, so the take can still be recovered from the home screen.
-      endRecordingGuards();
-      toast(`Could not save the recording: ${err.message}. It can be recovered from the home screen.`, 'error', 8000);
-    } finally {
-      busy.remove();
-    }
-  }
-
-  function discardTake() {
-    if (!st.session) return;
-    st.session.discard();
-    st.session = null;
-    if (st.cursor) { desktop.cursor.stop().catch(() => {}); st.cursor = null; }
-    const id = st.pid;
-    deleteJournal(id).catch(() => {});
-    (st.backend === 'idb' ? deleteChunks(id) : removeMediaDir(id)).catch(() => {});
+    if (changed) await saveProject(p);
+    if (backend === 'idb') await deleteChunks(pid).catch(() => {});
+    await deleteJournal(pid).catch(() => {});
     endRecordingGuards();
+    location.hash = `#/edit/${encodeURIComponent(p.id)}`;
+  } finally {
+    busy.remove();
   }
-
-  recorderToggle = () => {
-    if (st.session && st.session.state !== 'stopped') return finish();
-    if (st.display) return start();
-    desktop.window.focus().catch(() => {});
-    toast('Choose what to record first', 'info');
-  };
-  current = {
-    cleanup() {
-      recorderToggle = null;
-      cancelAnimationFrame(st.raf);
-      if (st.session && st.session.state !== 'stopped') discardTake();
-      for (const s of [st.display, st.cam, st.mic]) s?.getTracks().forEach((t) => t.stop());
-      st.meter?.close();
-    },
-  };
 }
 
 // ---- Cursor samples (desktop app, T-04) ------------------------------------------------------------

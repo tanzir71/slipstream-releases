@@ -1,8 +1,10 @@
 // `.slipstream` project bundles and `.slipstream-brand` brand kits (ticket C-02).
 //
 // A bundle is a zip: manifest.json (stored, first) + plan.json + media/screen.<ext>
-// [+ media/camera.<ext>] [+ thumb.jpg]. manifest.hashes lists the SHA-256 of every other file,
-// and unpackBundle() refuses a bundle whose files don't match. Spec: docs/bundle-format.md.
+// [+ media/camera.<ext>] [+ media/clips/<id>.<ext>] [+ media/assets/<key>.<ext>] [+ thumb.jpg].
+// manifest.hashes lists the SHA-256 of every other file, and unpackBundle() refuses a bundle whose
+// files don't match. Spec: docs/bundle-format.md. Multi-clip projects (AE-01) carry every clip as
+// media/clips/<id>.<ext>; their screen entry points at the first clip's file instead of a copy.
 //
 // Pure: no DOM, no Node built-ins. Runs in browsers and Node 20+. Media Blobs are hashed in
 // chunks and referenced (not copied) into the output, so multi-GB recordings are fine.
@@ -146,16 +148,27 @@ function isoDate(created) {
  *   a descriptor may omit the blob: { path: '../my-recording.webm', size, sha256, type }.
  * @param {Blob | Uint8Array} [args.thumb] JPEG preferred (written as thumb.jpg).
  * @param {{ name?: string, surface?: 'web'|'macos'|'tauri'|'engine', version?: string }} [args.app]
+ * @param {Array<{ id: string, blob?: Blob | File, name?: string, type?: string, path?: string, size?: number, sha256?: string }>} [args.clips]
+ *   Multi-clip projects (AE-01): every clip, written as media/clips/<id>.<ext> (plan.sources.clips[].path/sha256
+ *   follow). media.screen may then be left out, or be the first clip's Blob: the manifest's screen points at
+ *   that clip's file. Plan-only bundles list clips as external refs.
  * @param {boolean} [args.planOnly=false] Write plan + manifest only; media stay external refs.
  * @param {Date | string} [args.created]
  * @param {(p: { phase: 'hash' | 'zip', done: number, total: number }) => void} [args.onProgress]
  * @returns {Promise<Blob>} application/zip
  */
-export async function packBundle({ plan, media = {}, thumb = null, assets = [], app, planOnly = false, created, onProgress } = {}) {
+export async function packBundle({ plan, media = {}, thumb = null, assets = [], clips = [], app, planOnly = false, created, onProgress } = {}) {
   if (!isObject(plan)) throw new TypeError('packBundle: plan must be an object');
+  const clipItems = (Array.isArray(clips) ? clips : []).filter((c) => isObject(c) && /^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/.test(String(c.id || ''))).map((c) => ({ id: String(c.id), ...normalizeMedia({ ...c, blob: c.blob ?? c.file ?? null }, `clip ${c.id}`) }));
   const items = {};
   for (const role of MEDIA_ROLES) items[role] = normalizeMedia(media?.[role], role);
-  if (!items.screen) throw new TypeError('packBundle: media.screen is required');
+  // A multi-clip project's screen is its first clip: point at that file rather than storing it twice.
+  const screenClip = clipItems.length && (!items.screen || (items.screen.blob && items.screen.blob === clipItems[0].blob)) ? clipItems[0] : null;
+  if (screenClip) items.screen = null;
+  if (!items.screen && !screenClip) throw new TypeError('packBundle: media.screen is required');
+  for (const c of clipItems) {
+    if (!planOnly && !c.blob) throw new TypeError(`packBundle: clip ${c.id} must include its file (a Blob or File)`);
+  }
   for (const role of MEDIA_ROLES) {
     const m = items[role];
     if (!m) continue;
@@ -166,11 +179,13 @@ export async function packBundle({ plan, media = {}, thumb = null, assets = [], 
   if (thumb != null && !thumbBlob) throw new TypeError('packBundle: thumb must be a Blob or Uint8Array');
 
   // Hash media (and CRC it for the zip in the same pass when it will be embedded).
-  const toHash = MEDIA_ROLES.filter((r) => items[r]?.blob && (!planOnly || !items[r].sha256));
-  const total = toHash.reduce((s, r) => s + items[r].blob.size, 0);
+  const hashList = [
+    ...MEDIA_ROLES.filter((r) => items[r]?.blob && (!planOnly || !items[r].sha256)).map((role) => ({ role, m: items[role] })),
+    ...clipItems.filter((c) => c.blob && (!planOnly || !c.sha256)).map((c) => ({ role: `clip ${c.id}`, m: c })),
+  ];
+  const total = hashList.reduce((s, x) => s + x.m.blob.size, 0);
   let done = 0;
-  for (const role of toHash) {
-    const m = items[role];
+  for (const { role, m } of hashList) {
     const base = done;
     const r = await digest(m.blob, {
       crc: !planOnly,
@@ -208,6 +223,29 @@ export async function packBundle({ plan, media = {}, thumb = null, assets = [], 
     mediaManifest[role] = desc;
   }
 
+  // Multi-clip projects (AE-01): media/clips/<id>.<ext>.
+  const clipManifest = {};
+  for (const c of clipItems) {
+    const isImage = baseType(c.type).startsWith('image/');
+    const ext = isImage ? imageExtension(c.type, c.name || c.path, 'jpg') : mediaExtension(c.type, c.name || c.path);
+    const type = baseType(c.type) ? c.type : (isImage ? MIME_BY_IMAGE_EXT[ext] : MIME_BY_MEDIA_EXT[ext]) || 'application/octet-stream';
+    const desc = { path: '', type };
+    if (Number.isFinite(c.size)) desc.size = c.size;
+    if (c.sha256) desc.sha256 = c.sha256;
+    if (c.name) desc.name = basename(c.name);
+    if (planOnly) {
+      desc.path = c.path || basename(c.name) || `${c.id}.${ext}`;
+      desc.external = true;
+    } else {
+      desc.path = `media/clips/${c.id}.${ext}`;
+      hashes[desc.path] = c.sha256;
+      const lastModified = c.blob.lastModified;
+      entries.push({ name: desc.path, data: c.blob, compress: false, crc32: c.crc32, mtime: Number.isFinite(lastModified) ? new Date(lastModified) : undefined });
+    }
+    clipManifest[c.id] = desc;
+  }
+  if (screenClip) mediaManifest.screen = { ...clipManifest[screenClip.id], clip: screenClip.id };
+
   // Extra project assets (camera angles, B-roll, logo): media/assets/<key>.<ext>, hashed like the rest.
   // Plan-only bundles leave them out (they only reference the main recordings).
   const assetManifest = {};
@@ -240,6 +278,12 @@ export async function packBundle({ plan, media = {}, thumb = null, assets = [], 
       const prev = isObject(planOut.sources[role]) ? planOut.sources[role] : {};
       planOut.sources[role] = { ...prev, path: d.path, ...(d.sha256 ? { sha256: d.sha256 } : {}) };
     }
+    if (Array.isArray(planOut.sources.clips)) {
+      planOut.sources.clips = planOut.sources.clips.map((c) => {
+        const d = isObject(c) ? clipManifest[String(c.id)] : null;
+        return d ? { ...c, path: d.path, ...(d.sha256 ? { sha256: d.sha256 } : {}) } : c;
+      });
+    }
   }
   const planBytes = encoder.encode(JSON.stringify(planOut, null, 2));
   hashes['plan.json'] = sha256Hex(planBytes);
@@ -251,6 +295,7 @@ export async function packBundle({ plan, media = {}, thumb = null, assets = [], 
     created: isoDate(created),
     plan: 'plan.json',
     media: mediaManifest,
+    ...(Object.keys(clipManifest).length ? { clips: clipManifest } : {}),
     ...(Object.keys(assetManifest).length ? { assets: assetManifest } : {}),
     hashes,
   };
@@ -354,8 +399,9 @@ function describeProblems(problems) {
  *   mismatch or missing file. verify: false skips hashing and returns missing files as problems
  *   instead of throwing ("open anyway").
  * @returns {Promise<{ manifest: object, plan: object, media: { screen: File | null, camera: File | null },
- *   thumb: Blob | null, problems: object[] }>}
- *   problems may contain { kind: 'external', role, path, size, sha256, type } for plan-only refs.
+ *   clips: { [id: string]: File }, assets: { [key: string]: File }, thumb: Blob | null, problems: object[] }>}
+ *   problems may contain { kind: 'external', role, path, size, sha256, type } for plan-only refs (role 'clip'
+ *   with `id` for a multi-clip project's clips).
  */
 export async function unpackBundle(blob, { verify = true, onProgress } = {}) {
   const zip = await openZip(blob, 'Slipstream project');
@@ -381,6 +427,16 @@ export async function unpackBundle(blob, { verify = true, onProgress } = {}) {
     if (!expected.has(d.path) && typeof d.sha256 === 'string' && d.sha256) expected.set(d.path, d.sha256.toLowerCase());
   }
 
+  const clipManifest = isObject(manifest.clips) ? manifest.clips : {};
+  for (const [id, d] of Object.entries(clipManifest)) {
+    if (!isObject(d) || typeof d.path !== 'string' || !d.path) continue;
+    if (d.external) {
+      external.push({ kind: 'external', role: 'clip', id, path: d.path, ...(d.size != null ? { size: d.size } : {}), ...(d.sha256 ? { sha256: d.sha256 } : {}), ...(d.type ? { type: d.type } : {}) });
+      continue;
+    }
+    required.push(d.path);
+    if (!expected.has(d.path) && typeof d.sha256 === 'string' && d.sha256) expected.set(d.path, d.sha256.toLowerCase());
+  }
   const assetManifest = isObject(manifest.assets) ? manifest.assets : {};
   for (const d of Object.values(assetManifest)) if (isObject(d) && typeof d.path === 'string' && d.path) required.push(d.path);
   const fileProblems = await verifyFiles(zip, expected, required, { verify, onProgress });
@@ -410,7 +466,12 @@ export async function unpackBundle(blob, { verify = true, onProgress } = {}) {
     const entry = isObject(d) && d.path ? zip.get(d.path) : null;
     if (entry) assets[key] = makeFile(await entry.blob(d.type || ''), basename(d.name || d.path), d.type || '', entry.mtime?.getTime());
   }
-  return { manifest, plan, media: out, thumb, assets, problems: [...fileProblems, ...external] };
+  const clipFiles = {};
+  for (const [id, d] of Object.entries(clipManifest)) {
+    const entry = isObject(d) && !d.external && d.path ? zip.get(d.path) : null;
+    if (entry) clipFiles[id] = makeFile(await entry.blob(d.type || ''), basename(d.name || d.path), d.type || '', entry.mtime?.getTime());
+  }
+  return { manifest, plan, media: out, clips: clipFiles, thumb, assets, problems: [...fileProblems, ...external] };
 }
 
 // ---------------------------------------------------------------------------------------------

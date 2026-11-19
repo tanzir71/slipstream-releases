@@ -15,7 +15,11 @@ import { renderFrame, canvasPointToSource, screenMapping, BACKGROUNDS, dimsOf, u
 import { activeAt, maskRectAt, rectFromDrag, moveRect, resizeRect, hitTest, newMask, newAnnotation, overlayRange, ANNOTATION_COLOR } from '../../packages/editor-core/src/overlays.js';
 import { speechIntervals, musicGainAt, musicSourceTime, musicSettings } from '../../packages/editor-core/src/music.js';
 import { musicProvider, generateMusic } from './cloud.js';
-import { analyzeAudio, activityEvents, PEAKS_PER_SEC, MB, probe } from './media.js';
+import { analyzeAudio, activityEvents, PEAKS_PER_SEC, ASR_RATE, MB, probe, thumbnail } from './media.js';
+import {
+  sequenceTime, sequenceSegments, sequenceDuration, sequenceView, foldSequenceView, reorderSegments, rippleDelete,
+  sequenceSilences, sequenceSignal, sequenceEvents, segmentIndexAt, segmentSpeed,
+} from '../../packages/editor-core/src/edl.js';
 import { audioOffset } from '../../packages/editor-core/src/sync.js';
 import { integratedLoudness, normalizationGain, keptPcm } from '../../packages/editor-core/src/loudness.js';
 import { mediaProvider, generateMedia, PROVIDERS } from './cloud.js';
@@ -35,6 +39,9 @@ import { saveProject, putMedia, getMedia, getSetting, setSetting } from './store
 import { planFor, exportBrand, readBrand } from './projects-io.js';
 import desktop from './desktop-bridge.js';
 import { desktopPreview, originalRecord } from './preview-copy.js';
+import { createAutoEdit } from './autoedit-panel.js';
+import { fillCrops } from '../../packages/editor-core/src/autoedit-tweaks.js';
+import { FRAME_PRESETS, frameOf, rawFrameAt, frameSectionAt, setFrameSection, frameRuns, transitionOf, cropNote, normCrop, containRect } from '../../packages/editor-core/src/frame.js';
 
 const LANGS = [['auto', 'Detect language'], ['en', 'English'], ['es', 'Spanish'], ['fr', 'French'], ['de', 'German'], ['pt', 'Portuguese'], ['it', 'Italian'], ['nl', 'Dutch'], ['hi', 'Hindi'], ['bn', 'Bengali'], ['ar', 'Arabic'], ['ja', 'Japanese'], ['ko', 'Korean'], ['zh', 'Chinese'], ['ru', 'Russian'], ['tr', 'Turkish'], ['id', 'Indonesian']];
 
@@ -78,8 +85,20 @@ export async function openEditor(root, project, media, { onExit }) {
     musicBlob: null,  // edit.music's audio (S-04)
     musicEl: null,    // <audio> that plays it in the preview, following output time
     musicSpeech: [],  // speech on the output timeline, for ducking
+    cursor: project.media?.cursor?.samples?.length ? project.media.cursor.samples : null, // recorded pointer (T-04), for the full-screen crop
+    selFrame: null,   // selected Layout track section id (E-01)
+    frameScope: null, // 'whole' | 'section' for Style → Frame; null = follow the playhead
+    cropEdit: null,   // { lock, draft } while drawing the Area crop on the preview
+    // Multi-clip projects (AE-01): the edit's segments play project.media.clips; S.t is output time.
+    multi: !!project.media.clips?.length,
+    words: [],        // transcript words on the editor's timeline (the clip words laid out, in a multi-clip project)
+    view: null,       // sequenceView(S.edit) in a multi-clip project
+    clipBlobs: {}, clipEls: {}, clipAudio: {}, clipActivity: {}, clipThumbs: {},
+    seqClock: null, seqActive: null, seqAudioKey: '', selSeg: null,
   };
   ensureEditShape(S.edit);
+  const clipList = project.media.clips || [];
+  const clipNumber = (id) => clipList.findIndex((c) => c.id === id) + 1;
 
   // ---- media elements ------------------------------------------------------------------------
   const screenURL = URL.createObjectURL(S.screenBlob);
@@ -92,16 +111,45 @@ export async function openEditor(root, project, media, { onExit }) {
   S.angles = camEl ? [{ id: 'camera', name: (project.media.angles || []).find((a) => a.id === 'camera')?.name || 'Camera', get offset() { return S.camOffset; }, set offset(v) { S.camOffset = v; }, el: camEl, blob: S.camBlob, speaker: (project.media.angles || []).find((a) => a.id === 'camera')?.speaker }] : [];
   const activeAngle = (t) => { const want = layoutAt(S.edit, t).angle; return S.angles.find((a) => a.id === want) || S.angles[0] || null; };
   const hasVideo = project.media.hasVideo;
+  // Multi-clip projects: one <video> per video clip (the first one is screenEl) and a bitmap per photo.
+  if (S.multi) {
+    for (const [i, c] of clipList.entries()) {
+      const blob = i === 0 ? S.screenBlob : await getMedia(`${project.id}:clip-${c.id}`, c.type || '');
+      if (!blob) { toast(`The clip ${c.name || c.id} is missing from this browser`, 'error', 6000); continue; }
+      S.clipBlobs[c.id] = blob;
+      if (c.kind === 'photo') {
+        createImageBitmap(blob).then((b) => { S.clipEls[c.id] = b; S.dirty = true; }).catch(() => {});
+        continue;
+      }
+      const el = i === 0 ? screenEl : h('video', { src: URL.createObjectURL(blob), preload: 'auto', playsInline: true });
+      if (el !== screenEl) { el.addEventListener('loadeddata', () => { S.dirty = true; }); el.addEventListener('seeked', () => { S.dirty = true; }); mediaBox.append(el); }
+      S.clipEls[c.id] = el;
+    }
+    if (clipList[0]?.kind === 'photo') { screenEl.removeAttribute('src'); screenEl.muted = true; }
+  }
 
   // ---- layout ----------------------------------------------------------------------------------
   const nameInput = h('input.title-input', { value: project.name, 'aria-label': 'Project name', onchange: (e) => { project.name = e.target.value.trim() || 'Untitled'; save(); } });
   const savedDot = h('span.saved', 'Saved on this device');
   const polishChip = h('span.polish-chip', { hidden: true });
-  const aspectSeg = segmented(Object.keys(ASPECTS).map((a) => [a, a]), S.edit.aspect, (a) => commit((e) => { e.aspect = a; }), 'aspect-seg');
+  const aspectSeg = segmented(Object.keys(ASPECTS).map((a) => [a, a]), S.edit.aspect, (a) => setAspect(a), 'aspect-seg');
+  // Auto edit state in the top bar (Figma A4/A6): shown once the project has an Auto edit; opens its panel.
+  const aeBadge = h('button.ae-badge', { hidden: !S.edit.autoEdit, title: 'This project is an Auto edit · open its settings', onclick: () => rightTabs.select('autoedit') }, icon('wand', 12), 'Auto edit');
+  /**
+   * Change the output shape. In an Auto edit (AE-06), segments without a crop for the new shape get one in the same
+   * commit, from each clip's motion (analysed in the background when the project opens; a clip not analysed yet is
+   * centred). Cuts never move. Plain multi-clip projects and single recordings keep Layout's Fit / Fill instead.
+   */
+  function setAspect(a) {
+    commit((e) => {
+      e.aspect = a;
+      if (S.multi && e.autoEdit && ae) Object.assign(e, fillCrops(e, a, ae.reframeInputs()));
+    }, { raw: S.multi });
+  }
   const undoBtn = h('button.icon-btn', { title: 'Undo (⌘Z)', onclick: () => undo() }, icon('undo'));
   const redoBtn = h('button.icon-btn', { title: 'Redo (⇧⌘Z)', onclick: () => redo() }, icon('redo'));
   const topbar = h('header.topbar',
-    h('div.tb-left', h('button.icon-btn', { title: 'Back to projects', onclick: () => exit() }, icon('back')), h('a.mini-brand', { href: '#/', title: 'Projects' }, h('img', { src: '../assets/brand/slipstream-mark.svg', alt: 'Slipstream', width: 22, height: 22 })), nameInput, savedDot, polishChip),
+    h('div.tb-left', h('button.icon-btn', { title: 'Back to projects', onclick: () => exit() }, icon('back')), h('a.mini-brand', { href: '#/', title: 'Projects' }, h('img', { src: '../assets/brand/slipstream-mark.svg', alt: 'Slipstream', width: 22, height: 22 })), nameInput, aeBadge, savedDot, polishChip),
     h('div.tb-center', aspectSeg),
     h('div.tb-right', undoBtn, redoBtn, h('button.icon-btn', { title: 'Keyboard shortcuts (?)', onclick: () => showShortcuts() }, icon('keyboard')), h('button.btn.primary', { onclick: () => openExport() }, icon('download', 16), 'Export')));
 
@@ -123,47 +171,130 @@ export async function openEditor(root, project, media, { onExit }) {
   const leftTabs = tabs([['transcript', 'Transcript', 'text'], ['copilot', 'Copilot', 'chat'], ['clips', 'Clips', 'sparkles'], ['publish', 'Publish', 'share']], 'transcript', () => renderLeft());
   const leftBody = h('div.panel-body');
   const left = h('aside.panel.left', leftTabs, leftBody);
-  const rightTabs = tabs([['layout', 'Layout', 'layout'], ['style', 'Style', 'palette'], ['captions', 'Captions', 'captions'], ['zoom', 'Zoom', 'zoom'], ['annotate', 'Annotate', 'annotate'], ['broll', 'B-roll', 'image'], ['music', 'Music', 'music'], ['brand', 'Brand', 'brand']], 'layout', () => { if (rightTabs.value() !== 'annotate') setDrawTool(null); S.dirty = true; renderRight(); });
+  const rightTabs = tabs([...(S.multi ? [['autoedit', 'Auto edit', 'wand']] : []), ['layout', 'Layout', 'layout'], ['style', 'Style', 'palette'], ['captions', 'Captions', 'captions'], ['zoom', 'Zoom', 'zoom'], ['annotate', 'Annotate', 'annotate'], ['broll', 'B-roll', 'image'], ['music', 'Music', 'music'], ['brand', 'Brand', 'brand']], 'layout', () => { if (rightTabs.value() !== 'annotate') setDrawTool(null); S.dirty = true; renderRight(); });
   const rightBody = h('div.panel-body');
   // On phones the inspector is a bottom sheet (W-07): tap a tab or the handle to open it.
   const sheetHandle = h('button.sheet-handle', { 'aria-label': 'Show or hide the inspector', onclick: () => right.classList.toggle('open') });
   const right = h('aside.panel.right', { 'aria-label': 'Inspector' }, sheetHandle, rightTabs, rightBody);
   rightTabs.addEventListener('click', () => { if (matchMedia('(max-width: 760px)').matches) right.classList.add('open'); });
 
+  // Auto edit (AE-07/AE-08) for multi-clip projects: the split button, the panel and the tweak tools.
+  const ae = S.multi ? createAutoEdit({
+    S, project, clipList, clipNumber,
+    commit: (fn, opts) => commit(fn, opts), undo: () => undo(), seek: (t) => seek(t),
+    selectTab: (name) => rightTabs.select(name), renderRight: () => renderRight(), refreshTimeline: () => tl.refresh(),
+    setMusic: (file) => setMusic(file), clipThumb: (id) => S.clipThumbs[id], addClips: () => tl.addClips(),
+  }) : null;
   const tl = buildTimeline();
   const el = h('div.editor', topbar, left, stage, right, tl.el, mediaBox);
   root.replaceChildren(el);
 
   // ---- derived state & persistence -------------------------------------------------------------
   function derive() {
-    S.cuts = computeCuts(S.edit, S.duration);
-    S.kept = keptRanges(S.cuts, S.duration);
+    if (S.multi) {
+      // The editable view: clip words on the output timeline; edits never cut, they ripple the segments.
+      S.view = sequenceView(S.edit);
+      S.words = S.view.words;
+      S.duration = Math.max(0.04, sequenceDuration(S.edit.segments));
+      S.cuts = [];
+      S.kept = [{ start: 0, end: S.duration }];
+      // Activity is kept on the timeline: it moves when the segments do, so lay it out again on demand.
+      const segKey = JSON.stringify(sequenceSegments(S.edit.segments).map((s) => [s.asset, s.sourceIn, s.start, s.end]));
+      if (segKey !== S.segKey) { S.segKey = segKey; S.activity = null; }
+      rebuildSequenceAudio();
+    } else {
+      S.words = S.edit.words;
+      S.cuts = computeCuts(S.edit, S.duration);
+      S.kept = keptRanges(S.cuts, S.duration);
+    }
     const p = CAPTION_PRESETS[resolvePreset(S.edit.captions.preset)];
-    S.sourceCues = buildCues(S.edit.words, { maxWords: p.maxWords, maxChars: p.maxChars });
+    S.sourceCues = buildCues(S.words, { maxWords: p.maxWords, maxChars: p.maxChars });
     const lang = S.edit.captions.language;
     const tr = lang && S.edit.captions.translations?.[lang];
     S.cues = tr ? translatedCues(tr) : S.sourceCues;
-    S.musicSpeech = S.edit.music ? speechIntervals(S.edit.words, S.kept) : [];
+    S.musicSpeech = S.edit.music ? speechIntervals(S.words, S.kept) : [];
     S.dirty = true;
+  }
+  /**
+   * Multi-clip projects: the waveform and 16 kHz audio of the sequence, laid out from each clip's analysis, so
+   * transcription, loudness, scrubbing and Find clips work on the editor's timeline as they do for one recording.
+   */
+  function rebuildSequenceAudio(force = false) {
+    const withAudio = clipList.filter((c) => c.hasAudio && S.clipBlobs[c.id]);
+    if (!withAudio.length || withAudio.some((c) => !S.clipAudio[c.id])) return;
+    const key = JSON.stringify(sequenceSegments(S.edit.segments).map((s) => [s.asset, s.sourceIn, s.start, s.end, s.speed]));
+    if (!force && key === S.seqAudioKey) return;
+    S.seqAudioKey = key;
+    S.peaks = sequenceSignal(S.edit.segments, Object.fromEntries(withAudio.map((c) => [c.id, S.clipAudio[c.id].peaks])), PEAKS_PER_SEC);
+    S.pcm = sequenceSignal(S.edit.segments, Object.fromEntries(withAudio.map((c) => [c.id, S.clipAudio[c.id].pcm])), ASR_RATE);
+    lastLoud = null;
+  }
+  /** Decode each clip's audio once (peaks + 16 kHz PCM), then lay the sequence out. */
+  async function loadClipAudio(onProgress = () => {}) {
+    const todo = clipList.filter((c) => c.hasAudio && S.clipBlobs[c.id] && !S.clipAudio[c.id]);
+    for (const [i, c] of todo.entries()) {
+      S.clipAudio[c.id] = await analyzeAudio(S.clipBlobs[c.id], c.duration, (p) => onProgress((i + p) / todo.length)).catch(() => ({ peaks: new Float32Array(0), pcm: new Float32Array(0) }));
+    }
+    rebuildSequenceAudio(true);
+  }
+  /** Audio analysis of the project: the recording, or the clip sequence. */
+  async function analyzeProjectAudio(onProgress = () => {}) {
+    if (!S.multi) return analyzeAudio(S.screenBlob, S.duration, onProgress);
+    await loadClipAudio(onProgress);
+    return { peaks: S.peaks, pcm: S.pcm };
+  }
+  /** On-screen activity on the editor's timeline: the recording's, or each video clip's laid out by the segments. */
+  async function projectActivity(opts = {}) {
+    if (!S.multi) return activityEvents(S.screenBlob, S.duration, opts);
+    const vids = clipList.filter((c) => c.kind === 'video' && S.clipBlobs[c.id]);
+    for (const [i, c] of vids.entries()) {
+      S.clipActivity[c.id] ??= await activityEvents(S.clipBlobs[c.id], c.duration, { ...opts, onProgress: (p) => opts.onProgress?.((i + p) / vids.length) });
+    }
+    return sequenceEvents(S.edit.segments, S.clipActivity);
+  }
+  /** Zooms planned on a sequence stop at the end of their clip. */
+  function zoomsInSegments(zooms) {
+    if (!S.multi) return zooms;
+    const sorted = sequenceSegments(S.edit.segments);
+    return zooms.map((z) => { const i = segmentIndexAt(sorted, z.start); return i < 0 ? null : { ...z, end: Math.min(z.end, sorted[i].end) }; }).filter((z) => z && z.end - z.start >= 1);
+  }
+  /** Long pauses to tighten: between words (single recording) or between words inside each clip (multi-clip). */
+  function pausesIn(words, segments) {
+    return S.multi ? sequenceSilences(words, segments) : detectWordSilences(words, S.duration);
   }
   /** Translated cues carry no word timings; spread them over each cue so the caption renderer can lay them out. */
   function translatedCues(cues) {
     return cues.map((c) => ({ ...c, words: cuesToWords([c]).map(({ text, start, end }) => ({ text, start, end })) }));
   }
   const saveNow = async () => {
-    try { project.edit = S.edit; project.peaks = S.peaks; try { project.plan = planFor(project, S.edit); } catch { /* plan mirror is best effort */ } await saveProject(project); savedDot.textContent = 'Saved on this device'; savedDot.classList.remove('busy'); }
+    try { project.edit = S.edit; project.peaks = S.multi ? null : S.peaks; if (S.multi) project.media.duration = S.duration; try { project.plan = planFor(project, S.edit); } catch { /* plan mirror is best effort */ } await saveProject(project); savedDot.textContent = 'Saved on this device'; savedDot.classList.remove('busy'); }
     catch (err) { savedDot.textContent = 'Not saved'; toast(`Could not save: ${err.message}`, 'error'); }
   };
   const save = debounce(saveNow, 500);
-  function commit(fn, { rerender = 'all' } = {}) {
-    S.undo.push(JSON.stringify(S.edit));
-    if (S.undo.length > 120) S.undo.shift();
-    S.redo = [];
-    fn(S.edit);
+  // Slider drags coalesce: commits with the same `coalesce` key less than a second apart share one undo step.
+  let lastCoalesce = null;
+  // In a multi-clip project fn edits the sequence view (words on the timeline, no cuts) and the result is folded
+  // back: deleted words, cuts and a range ripple the segments (AE-01). `raw` edits S.edit itself (segments, clip words).
+  function commit(fn, { rerender = 'all', coalesce = null, raw = false } = {}) {
+    const now = performance.now();
+    if (!(coalesce && lastCoalesce?.key === coalesce && now - lastCoalesce.at < 1000)) {
+      S.undo.push(JSON.stringify(S.edit));
+      if (S.undo.length > 120) S.undo.shift();
+      S.redo = [];
+    }
+    lastCoalesce = coalesce ? { key: coalesce, at: now } : null;
+    if (S.multi && !raw) {
+      const view = sequenceView(S.edit);
+      fn(view);
+      S.edit = ensureEditShape(foldSequenceView(S.edit, view));
+      project.edit = S.edit;
+    } else fn(S.edit);
     afterChange(rerender);
   }
   function afterChange(rerender = 'all') {
+    const dur = S.duration;
     derive();
+    if (S.multi && Math.abs(dur - S.duration) > 1e-6) { tl.resize(); if (S.t > S.duration - 0.01) seek(S.duration - 0.01); }
     savedDot.textContent = 'Saving…';
     savedDot.classList.add('busy');
     save();
@@ -173,6 +304,8 @@ export async function openEditor(root, project, media, { onExit }) {
     aspectSeg.set(S.edit.aspect);
     resizeCanvas();
     tl.refresh();
+    ae?.refresh();
+    aeBadge.hidden = !S.edit.autoEdit;
     updateRangeChip();
   }
   function undo() {
@@ -201,11 +334,13 @@ export async function openEditor(root, project, media, { onExit }) {
   // ---- playback --------------------------------------------------------------------------------
   function seek(t) {
     S.t = Math.max(0, Math.min(S.duration - 0.01, t));
+    if (S.multi) { seqSeek(S.t); S.dirty = true; return; }
     screenEl.currentTime = S.t;
     for (const a of S.angles) a.el.currentTime = Math.max(0, S.t - a.offset);
     S.dirty = true;
   }
   async function play() {
+    if (S.multi) { seqPlay(); return; }
     if (!S.kept.length) return;
     const lastEnd = S.kept[S.kept.length - 1].end;
     if (S.t >= lastEnd - 0.05) seek(S.kept[0].start);
@@ -219,6 +354,7 @@ export async function openEditor(root, project, media, { onExit }) {
   }
   function pause() {
     screenEl.pause();
+    for (const el of Object.values(S.clipEls)) if (el instanceof HTMLVideoElement) el.pause();
     for (const a of S.angles) a.el.pause();
     for (const el of Object.values(S.brollEls)) if (el instanceof HTMLVideoElement) el.pause();
     S.musicEl?.pause();
@@ -226,6 +362,63 @@ export async function openEditor(root, project, media, { onExit }) {
     playBtn.replaceChildren(icon('play', 20));
   }
   function togglePlay() { S.playing ? pause() : play(); }
+
+  // ---- multi-clip playback (AE-01): the clip under the playhead plays; at a segment's end the next one takes over ----
+  const seqAt = (t) => sequenceTime(S.edit.segments, t);
+  const clipVideo = (asset) => (S.clipEls[asset] instanceof HTMLVideoElement ? S.clipEls[asset] : null);
+  function seqSeek(t) {
+    const a = seqAt(t);
+    const el = a && clipVideo(a.asset);
+    if (el) { if (Math.abs(el.currentTime - a.local) > 0.02) el.currentTime = a.local; el.playbackRate = a.speed; }
+    if (S.playing) seqStart(a);
+    else S.seqActive = a?.segment.id || null;
+  }
+  function seqStart(a) {
+    S.seqClock = { wall: performance.now(), t: S.t };
+    S.seqActive = a?.segment.id || null;
+    const el = a && clipVideo(a.asset);
+    for (const x of Object.values(S.clipEls)) if (x instanceof HTMLVideoElement && x !== el && !x.paused) x.pause();
+    if (!el) return;
+    if (Math.abs(el.currentTime - a.local) > 0.05) el.currentTime = a.local;
+    el.playbackRate = a.speed;
+    // An Auto edit to music with "Keep clip sound" off plays the music alone (AE-09).
+    el.muted = !!(S.edit.autoEdit && S.edit.music && S.edit.autoEdit.keepClipSound === false);
+    el.play().catch(() => {});
+  }
+  function seqPlay() {
+    if (!S.kept.length) return;
+    if (S.t >= S.duration - 0.05) S.t = 0;
+    S.playing = true;
+    playBtn.replaceChildren(icon('pause', 20));
+    ensurePreviewGain();
+    seqStart(seqAt(S.t));
+  }
+  function seqTick() {
+    const a = seqAt(S.t);
+    if (!a) { pause(); return; }
+    const el = clipVideo(a.asset);
+    const live = el && !el.paused && el.readyState >= 2 && !el.seeking && S.seqActive === a.segment.id;
+    const t = live ? a.segment.start + (el.currentTime - a.segment.sourceIn) / a.speed : S.seqClock.t + (performance.now() - S.seqClock.wall) / 1000;
+    if (t >= a.segment.end - 1e-3 || (live && el.ended)) {
+      if (a.segment.end >= S.duration - 1e-3) { S.t = Math.max(0, S.duration - 0.01); pause(); return; }
+      S.t = a.segment.end + 1e-4;
+      seqStart(seqAt(S.t));
+      return;
+    }
+    // Ready the next clip just before the cut so it starts on time.
+    if (a.segment.end - t < 0.4) {
+      const n = seqAt(a.segment.end + 1e-4), ne = n && clipVideo(n.asset);
+      if (ne && ne !== el && ne.paused && Math.abs(ne.currentTime - n.local) > 0.05) ne.currentTime = n.local;
+    }
+    S.t = Math.max(a.segment.start, Math.min(a.segment.end, t));
+  }
+  /** What the preview shows at the playhead in a multi-clip project: the clip's <video> or photo. */
+  function seqFrame() {
+    const a = seqAt(S.t);
+    const x = a && S.clipEls[a.asset];
+    if (!x) return null;
+    return x instanceof HTMLVideoElement ? (x.readyState >= 2 ? x : null) : x;
+  }
 
   let lastWord = -1;
   /** Keep the music bed in step with the preview: output time drives where in the song and how loud (ducking). */
@@ -243,7 +436,8 @@ export async function openEditor(root, project, media, { onExit }) {
   function tick() {
     if (S.destroyed) return;
     syncMusic();
-    if (S.playing) {
+    if (S.playing && S.multi) { seqTick(); S.dirty = true; }
+    else if (S.playing) {
       let t = screenEl.currentTime;
       const c = cutAt(S.cuts, t);
       if (c) {
@@ -266,9 +460,10 @@ export async function openEditor(root, project, media, { onExit }) {
       S.dirty = false;
       const out = srcToOut(S.kept, S.t);
       timeOut.textContent = `${fmtTime(out, true)} / ${fmtTime(totalDuration(S.kept))}`;
-      timeSrc.textContent = `source ${fmtTime(S.t)}`;
+      const at = S.multi ? seqAt(S.t) : null;
+      timeSrc.textContent = ae?.active ? ae.transportLabel(S.t) : at ? `clip ${clipNumber(at.asset)} · ${fmtTime(at.local)}` : `source ${fmtTime(S.t)}`;
       tl.playhead();
-      const wi = wordIndexAt(S.edit.words, S.t);
+      const wi = wordIndexAt(S.words, S.t);
       if (wi !== lastWord) {
         transcriptBox.querySelector('.w.now')?.classList.remove('now');
         const sp = transcriptBox.querySelector(`.w[data-i="${wi}"]`);
@@ -281,10 +476,11 @@ export async function openEditor(root, project, media, { onExit }) {
   function draw() {
     const W = canvas.width, H = canvas.height;
     if (!W || !H) return;
-    const screenReady = hasVideo && screenEl.readyState >= 2;
+    const screenReady = hasVideo && (S.multi || screenEl.readyState >= 2);
     const act = activeAngle(S.t);
     const camReady = act && act.el.readyState >= 2 && S.t >= act.offset;
-    renderFrame(g, W, H, { screen: screenReady ? screenEl : null, camera: camReady ? act.el : null, edit: S.edit, t: S.t, cues: S.cues, overlays: { logo: S.logoBmp, broll: brollFrame(S.t) }, reducedMotion: S.reducedMotion });
+    if (S.cropEdit) { drawCropEditor(W, H); return; }
+    renderFrame(g, W, H, { screen: !screenReady ? null : S.multi ? seqFrame() : screenEl, camera: camReady ? act.el : null, edit: S.edit, t: S.t, cues: S.cues, cursor: S.cursor, overlays: { logo: S.logoBmp, broll: brollFrame(S.t) }, reducedMotion: S.reducedMotion });
     if (annotating()) drawOverlayHandles(W, H);
     if (S.focusPick) {
       const z = S.edit.zooms.find((x) => x.id === S.selZoom);
@@ -327,10 +523,11 @@ export async function openEditor(root, project, media, { onExit }) {
 
   canvas.addEventListener('click', (e) => {
     if (S.suppressClick) { S.suppressClick = false; return; }
+    if (S.cropEdit) return;
     if (!S.focusPick) { togglePlay(); return; }
     const r = canvas.getBoundingClientRect();
     const px = ((e.clientX - r.left) / r.width) * canvas.width, py = ((e.clientY - r.top) / r.height) * canvas.height;
-    const p = canvasPointToSource(S.edit, canvas.width, canvas.height, dimsOf(screenEl), camEl ? dimsOf(camEl) : null, px, py, S.t);
+    const p = canvasPointToSource(S.edit, canvas.width, canvas.height, dimsOf(screenEl), camEl ? dimsOf(camEl) : null, px, py, S.t, S.cursor);
     if (!p) return;
     let id = S.selZoom;
     commit((e2) => {
@@ -351,8 +548,120 @@ export async function openEditor(root, project, media, { onExit }) {
     return { x: ((e.clientX - r.left) / r.width) * canvas.width, y: ((e.clientY - r.top) / r.height) * canvas.height, k: canvas.width / Math.max(1, r.width) };
   }
   function mappingNow() {
-    return hasVideo ? screenMapping(S.edit, canvas.width, canvas.height, dimsOf(screenEl), camEl ? dimsOf(camEl) : null, S.t, { reducedMotion: S.reducedMotion }) : null;
+    return hasVideo ? screenMapping(S.edit, canvas.width, canvas.height, dimsOf(screenEl), camEl ? dimsOf(camEl) : null, S.t, { reducedMotion: S.reducedMotion, cursor: S.cursor }) : null;
   }
+
+  // ---- Area crop (W-11, E-01): crop the recorded surface to part of the frame -------------------------------
+  // While editing, the preview shows the whole recording with the area on top; drag inside to move it, a corner to
+  // resize, outside to draw a new one. Each drag is one commit (one undo step). edit.frame.crop = [x, y, w, h].
+  const cropHint = h('div.stage-hint.crop-hint', icon('aspect', 14), 'Drag on the preview to choose the area', h('button.link', { onclick: () => setCropEdit(false) }, 'Done'));
+  canvasWrap.append(cropHint);
+  const CROP_LOCKS = { free: null, '16:9': 16 / 9, '9:16': 9 / 16, '1:1': 1, '4:5': 4 / 5 };
+  function setCropEdit(on) {
+    S.cropEdit = on ? { lock: 'free', draft: null } : null;
+    canvasWrap.classList.toggle('cropping', !!on);
+    if (on && S.playing) pause();
+    S.dirty = true;
+    if (rightTabs.value() === 'style') renderRight();
+  }
+  function cropView(W, H) {
+    const d = dimsOf(screenEl);
+    if (!d) return null;
+    const pad = Math.min(W, H) * 0.05;
+    const r = containRect(d.w, d.h, { x: pad, y: pad, w: W - pad * 2, h: H - pad * 2 });
+    return { r, d, toCanvas: (fx, fy) => ({ x: r.x + fx * r.w, y: r.y + fy * r.h }), toSource: (px, py) => ({ x: (px - r.x) / r.w, y: (py - r.y) / r.h }) };
+  }
+  /** Keep a rect's centre and give it the locked aspect (in source pixels), shrinking it to fit the frame. */
+  function lockAspect(rect, lock, d) {
+    const a = CROP_LOCKS[lock];
+    if (!a) return rect;
+    const [x, y, w, h] = rect;
+    const cx = x + w / 2, cy = y + h / 2;
+    let pw = w * d.w, ph = pw / a;
+    if (ph > d.h) { ph = d.h; pw = ph * a; }
+    if (pw > d.w) { pw = d.w; ph = pw / a; }
+    const fw = pw / d.w, fh = ph / d.h;
+    const nx = Math.max(0, Math.min(1 - fw, cx - fw / 2)), ny = Math.max(0, Math.min(1 - fh, cy - fh / 2));
+    return [nx, ny, fw, fh];
+  }
+  function drawCropEditor(W, H) {
+    g.fillStyle = '#0b0b0d';
+    g.fillRect(0, 0, W, H);
+    const v = cropView(W, H);
+    if (!v || screenEl.readyState < 2) return;
+    g.drawImage(screenEl, v.r.x, v.r.y, v.r.w, v.r.h);
+    const c = S.cropEdit.draft || normCrop(S.edit.frame?.crop) || [0, 0, 1, 1];
+    const p0 = v.toCanvas(c[0], c[1]), p1 = v.toCanvas(c[0] + c[2], c[1] + c[3]);
+    const m = Math.min(W, H), lw = Math.max(1.5, m / 500), hs = Math.max(7, m * 0.012);
+    g.save();
+    g.fillStyle = 'rgba(0,0,0,0.58)';
+    g.beginPath();
+    g.rect(v.r.x, v.r.y, v.r.w, v.r.h);
+    g.rect(p0.x, p0.y, p1.x - p0.x, p1.y - p0.y);
+    g.fill('evenodd');
+    g.strokeStyle = 'rgba(255,255,255,0.22)';
+    g.lineWidth = 1;
+    for (const k of [1 / 3, 2 / 3]) {
+      g.beginPath(); g.moveTo(p0.x + (p1.x - p0.x) * k, p0.y); g.lineTo(p0.x + (p1.x - p0.x) * k, p1.y); g.stroke();
+      g.beginPath(); g.moveTo(p0.x, p0.y + (p1.y - p0.y) * k); g.lineTo(p1.x, p0.y + (p1.y - p0.y) * k); g.stroke();
+    }
+    g.strokeStyle = '#8b93ff';
+    g.lineWidth = lw;
+    g.strokeRect(p0.x, p0.y, p1.x - p0.x, p1.y - p0.y);
+    g.fillStyle = '#fff';
+    for (const q of [p0, { x: p1.x, y: p0.y }, { x: p0.x, y: p1.y }, p1]) { g.fillRect(q.x - hs / 2, q.y - hs / 2, hs, hs); g.strokeRect(q.x - hs / 2, q.y - hs / 2, hs, hs); }
+    const label = `${Math.round(c[2] * v.d.w)} × ${Math.round(c[3] * v.d.h)}`;
+    g.font = `600 ${Math.max(11, m * 0.022)}px Geist, system-ui, sans-serif`;
+    const tw = g.measureText(label).width + 14, th = Math.max(20, m * 0.04);
+    const ly = p0.y - th - 6 > 0 ? p0.y - th - 6 : p0.y + 6;
+    g.fillStyle = 'rgba(17,17,19,0.86)';
+    g.fillRect(p0.x, ly, tw, th);
+    g.fillStyle = '#fff';
+    g.textBaseline = 'middle';
+    g.fillText(label, p0.x + 7, ly + th / 2);
+    g.restore();
+  }
+  canvas.addEventListener('pointerdown', (e) => {
+    if (!S.cropEdit || e.button !== 0) return;
+    const v = cropView(canvas.width, canvas.height);
+    if (!v) return;
+    e.stopImmediatePropagation();
+    S.suppressClick = true;
+    const c0 = canvasPoint(e);
+    const p0 = v.toSource(c0.x, c0.y);
+    const rect = normCrop(S.edit.frame?.crop) || [0, 0, 1, 1];
+    const tol = (12 * c0.k) / v.r.w;
+    const h0 = hitTest([{ id: 'crop', start: -1, end: Infinity, rect }], 0, p0, tol, (it) => it.rect);
+    // Without a crop the area is the whole frame: dragging inside draws a new one, the corners still resize.
+    const hit = h0 && (h0.handle !== 'move' || normCrop(S.edit.frame?.crop)) ? h0 : null;
+    const lock = S.cropEdit.lock;
+    let moved = false;
+    canvas.setPointerCapture(e.pointerId);
+    const move = (ev) => {
+      const c = canvasPoint(ev);
+      const p = v.toSource(c.x, c.y);
+      if (Math.hypot(p.x - p0.x, p.y - p0.y) > 0.003) moved = true;
+      if (!moved || !S.cropEdit) return;
+      let next = !hit ? rectFromDrag(p0, p) : hit.handle === 'move' ? moveRect(rect, p.x - p0.x, p.y - p0.y) : resizeRect(rect, hit.handle, p);
+      if (lock !== 'free' && hit?.handle !== 'move') next = lockAspect(next, lock, v.d);
+      S.cropEdit.draft = next;
+      S.dirty = true;
+    };
+    const up = () => {
+      canvas.removeEventListener('pointermove', move);
+      canvas.removeEventListener('pointerup', up);
+      const draft = S.cropEdit?.draft;
+      if (S.cropEdit) S.cropEdit.draft = null;
+      if (moved && draft) {
+        const crop = normCrop(draft);
+        commit((ed) => { ed.frame = { ...(ed.frame || {}) }; if (crop) ed.frame.crop = crop.map((n) => Math.round(n * 1e4) / 1e4); else delete ed.frame.crop; }, { rerender: 'none' });
+        if (rightTabs.value() === 'style') renderRight();
+      }
+      S.dirty = true;
+    };
+    canvas.addEventListener('pointermove', move);
+    canvas.addEventListener('pointerup', up);
+  });
   function setDrawTool(tool) {
     S.drawTool = tool;
     S.draft = null;
@@ -525,12 +834,12 @@ export async function openEditor(root, project, media, { onExit }) {
   /** Screen-activity events are reused by scenes and clip scoring, so keep a compact copy with the project. */
   function rememberActivity(ev) {
     S.activity = ev.map((e) => ({ t: Math.round(e.t * 100) / 100, x: Math.round(e.x * 1000) / 1000, y: Math.round(e.y * 1000) / 1000, area: Math.round((e.area || 0) * 10000) / 10000 }));
-    project.activity = S.activity;
+    if (!S.multi) project.activity = S.activity;
   }
   async function ensureActivity(onProgress) {
     if (S.activity) return S.activity;
     if (!hasVideo) return [];
-    rememberActivity(await activityEvents(S.screenBlob, S.duration, { onProgress }));
+    rememberActivity(await projectActivity({ onProgress }));
     save();
     return S.activity;
   }
@@ -565,7 +874,7 @@ export async function openEditor(root, project, media, { onExit }) {
   }
 
   function renderTranscript() {
-    const words = S.edit.words;
+    const words = S.words;
     const scroll = transcriptScroller.scrollTop;
     transcriptBox.replaceChildren();
     if (!words.length) { transcriptBox.append(S.polish ? polishCard() : transcribeCard()); return; }
@@ -577,7 +886,8 @@ export async function openEditor(root, project, media, { onExit }) {
       for (const i of para) {
         const w = words[i];
         const prev = words[i - 1];
-        if (prev && w.start - prev.end >= 0.75) {
+        // In a multi-clip project a gap across a clip edge is a cut between clips, not a pause.
+        if (prev && w.start - prev.end >= 0.75 && (!S.multi || prev.seg === w.seg)) {
           const gap = w.start - prev.end;
           p.append(h('span.pause', { dataset: { a: String(prev.end), b: String(w.start) }, title: 'Pause — select it and press Delete to cut' }, `${gap.toFixed(1)}s`), ' ');
         }
@@ -609,12 +919,12 @@ export async function openEditor(root, project, media, { onExit }) {
     return tag;
   }
   async function detectSpeakers(btn) {
-    if (!S.hasAudio || !S.edit.words.length) return;
+    if (!S.hasAudio || !S.words.length) return;
     btn.disabled = true;
     const label = (t) => btn.replaceChildren(h('span.mini-spin'), t);
     label('Reading audio…');
     try {
-      const pcm = S.pcm || (S.pcm = (await analyzeAudio(S.screenBlob, S.duration)).pcm);
+      const pcm = S.pcm || (S.pcm = (await analyzeProjectAudio()).pcm);
       if (!pcm) throw new Error('Could not decode the audio track in this browser.');
       S.job = diarize(pcm, {
         onDownload: (loaded, total) => label(`Downloading speaker models once · ${fmtBytes(loaded)} of ${fmtBytes(total)}`),
@@ -623,7 +933,7 @@ export async function openEditor(root, project, media, { onExit }) {
       });
       const segments = await S.job.promise;
       S.job = null;
-      const words = assignSpeakers(S.edit.words, segments);
+      const words = assignSpeakers(S.words, segments);
       const speakers = defaultSpeakers(words, S.edit.speakers);
       const n = Object.keys(speakers).length;
       commit((ed) => { ed.words = words; ed.speakers = speakers; }, { rerender: 'transcript' });
@@ -639,7 +949,7 @@ export async function openEditor(root, project, media, { onExit }) {
   }
 
   function renderTranscriptState() {
-    const words = S.edit.words;
+    const words = S.words;
     if (!words.length) return;
     for (const sp of transcriptBox.querySelectorAll('.w')) {
       const w = words[Number(sp.dataset.i)];
@@ -661,7 +971,7 @@ export async function openEditor(root, project, media, { onExit }) {
     const hard = words.filter((w) => w.filler === 'hard' && !w.deleted).length;
     fillerBtn.replaceChildren(icon('wand', 14), hard ? `Remove ${hard} filler${hard > 1 ? 's' : ''}` : 'No fillers');
     fillerBtn.disabled = !hard;
-    const sil = detectWordSilences(words, S.duration).filter((r) => !S.edit.cuts.some((c) => c.kind === 'silence' && Math.abs(c.start - r.start) < 0.01));
+    const sil = pausesIn(words, S.edit.segments).filter((r) => !S.edit.cuts.some((c) => c.kind === 'silence' && Math.abs(c.start - r.start) < 0.01));
     pauseBtn.replaceChildren(icon('silence', 14), sil.length ? `Shorten ${sil.length} pause${sil.length > 1 ? 's' : ''}` : 'Pauses tightened');
     pauseBtn.disabled = !sil.length;
     S.retakes = detectRetakes(words);
@@ -669,7 +979,7 @@ export async function openEditor(root, project, media, { onExit }) {
     retakeBtn.disabled = !S.retakes.length;
   }
   function removeRetakes() {
-    const props = detectRetakes(S.edit.words);
+    const props = detectRetakes(S.words);
     if (!props.length) return;
     commit((ed) => { ed.words = applyRetakes(ed.words, props); }, { rerender: 'transcript' });
     toast(`Cut ${props.length} earlier take${props.length > 1 ? 's' : ''} · each is struck through and can be restored`, 'ok');
@@ -694,7 +1004,7 @@ export async function openEditor(root, project, media, { onExit }) {
       const i = Number(sp.dataset.i);
       if (e.shiftKey && S.wsel) S.wsel = { a: Math.min(S.wsel.a, i), b: Math.max(S.wsel.b, i) };
       else S.wsel = { a: i, b: i };
-      seek(S.edit.words[i].start);
+      seek(S.words[i].start);
       renderTranscriptState();
       showSelBar();
     } else if (!e.target.closest('.pause')) { S.wsel = null; renderTranscriptState(); selBar.hidden = true; }
@@ -703,7 +1013,7 @@ export async function openEditor(root, project, media, { onExit }) {
   const srStatus = h('div.sr-only', { 'aria-live': 'polite' });
   transcriptBox.addEventListener('keydown', (e) => {
     if (e.target !== transcriptBox || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
-    const words = S.edit.words, n = words.length;
+    const words = S.words, n = words.length;
     if (!n) return;
     e.preventDefault(); e.stopPropagation();
     const cur = S.wsel || (() => { const i = Math.max(0, wordIndexAt(words, S.t)); return { a: i, b: i }; })();
@@ -742,8 +1052,8 @@ export async function openEditor(root, project, media, { onExit }) {
       sp.contentEditable = 'false';
       sp.classList.remove('editing');
       const text = sp.textContent.trim();
-      if (ok && text && text !== S.edit.words[i].text) commit((ed) => { ed.words[i].text = text; ed.words = markFillers(ed.words); }, { rerender: 'transcript' });
-      else sp.textContent = S.edit.words[i].text;
+      if (ok && text && text !== S.words[i].text) commit((ed) => { ed.words[i].text = text; ed.words = markFillers(ed.words); }, { rerender: 'transcript' });
+      else sp.textContent = S.words[i].text;
     };
     sp.addEventListener('keydown', function onKey(ev) {
       if (ev.key === 'Enter') { ev.preventDefault(); sp.removeEventListener('keydown', onKey); finish(true); }
@@ -756,7 +1066,7 @@ export async function openEditor(root, project, media, { onExit }) {
   function showSelBar() {
     if (!S.wsel) { selBar.hidden = true; return; }
     const { a, b } = S.wsel;
-    const all = S.edit.words.slice(a, b + 1);
+    const all = S.words.slice(a, b + 1);
     const allDeleted = all.every((w) => w.deleted);
     const span = transcriptBox.querySelector(`.w[data-i="${a}"]`);
     if (!span) return;
@@ -774,7 +1084,7 @@ export async function openEditor(root, project, media, { onExit }) {
   function toggleDeleteSelection() {
     if (!S.wsel) return;
     const { a, b } = S.wsel;
-    const allDeleted = S.edit.words.slice(a, b + 1).every((w) => w.deleted);
+    const allDeleted = S.words.slice(a, b + 1).every((w) => w.deleted);
     commit((ed) => { for (let i = a; i <= b; i++) ed.words[i].deleted = !allDeleted; }, { rerender: 'transcript' });
     toast(allDeleted ? 'Restored' : `Cut ${b - a + 1} word${b > a ? 's' : ''} · ⌘Z to undo`, 'ok', 1600);
     showSelBar();
@@ -782,7 +1092,7 @@ export async function openEditor(root, project, media, { onExit }) {
   function zoomOnSelection() {
     if (!S.wsel) return;
     const { a, b } = S.wsel;
-    const start = Math.max(0, S.edit.words[a].start - 0.3), end = Math.min(S.duration, Math.max(S.edit.words[b].end + 0.6, start + 1.8));
+    const start = Math.max(0, S.words[a].start - 0.3), end = Math.min(S.duration, Math.max(S.words[b].end + 0.6, start + 1.8));
     const z = { ...newZoom(start), start, end };
     commit((ed) => { ed.zooms.push(z); });
     S.selZoom = z.id;
@@ -793,7 +1103,7 @@ export async function openEditor(root, project, media, { onExit }) {
     if (!S.wsel) return;
     const { a, b } = S.wsel;
     commit((ed) => { ed.range = { start: Math.max(0, ed.words[a].start - 0.1), end: Math.min(S.duration, ed.words[b].end + 0.25) }; });
-    toast('Clip range set — export will only include this part', 'ok');
+    toast(S.multi ? 'Trimmed to the selected words · ⌘Z to undo' : 'Clip range set — export will only include this part', 'ok');
   }
   function togglePauseCut(a, b) {
     const existing = S.edit.cuts.findIndex((c) => c.start >= a - 0.01 && c.end <= b + 0.01);
@@ -808,7 +1118,7 @@ export async function openEditor(root, project, media, { onExit }) {
     toast(`Removed ${n} filler word${n === 1 ? '' : 's'} · ⌘Z to undo`, 'ok');
   }
   function shortenPauses() {
-    const sil = detectWordSilences(S.edit.words, S.duration);
+    const sil = pausesIn(S.words, S.edit.segments);
     commit((ed) => {
       ed.cuts = ed.cuts.filter((c) => c.kind !== 'silence');
       for (const r of sil) ed.cuts.push({ id: uid('c'), ...r });
@@ -847,7 +1157,7 @@ export async function openEditor(root, project, media, { onExit }) {
       h('label.field', h('span', 'Model'), h('select', { onchange: (e) => { model = e.target.value; } }, MODELS.map((m) => h('option', { value: m.id, selected: m.default }, `${m.label} — ${m.note}`)))),
       h('label.field', h('span', 'Language'), h('select', { onchange: (e) => { lang = e.target.value; } }, LANGS.map(([v, l]) => h('option', { value: v }, l)))),
       go,
-      desktop.available && S.hasAudio ? h('button.btn.wide', { title: 'whisper.cpp in the Slipstream engine: native speed on this computer', onclick: (e) => runEngineTranscription(model, lang, status, e.currentTarget) }, icon('cpu', 16), 'Transcribe with whisper.cpp') : null,
+      desktop.available && S.hasAudio && !S.multi ? h('button.btn.wide', { title: 'whisper.cpp in the Slipstream engine: native speed on this computer', onclick: (e) => runEngineTranscription(model, lang, status, e.currentTarget) }, icon('cpu', 16), 'Transcribe with whisper.cpp') : null,
       h('button.btn.ghost.wide', { onclick: () => file.click() }, icon('upload', 16), 'Import SRT / VTT instead'),
       file,
       status);
@@ -913,7 +1223,7 @@ export async function openEditor(root, project, media, { onExit }) {
   async function ensurePcm(status) {
     if (S.pcm) return S.pcm;
     status.replaceChildren(progressRow('Reading audio…', 0));
-    const res = await analyzeAudio(S.screenBlob, S.duration, (p) => setProgress(status, p));
+    const res = await analyzeProjectAudio((p) => setProgress(status, p));
     S.pcm = res.pcm;
     if (!S.peaks) { S.peaks = res.peaks; tl.refresh(); }
     return S.pcm;
@@ -987,14 +1297,18 @@ export async function openEditor(root, project, media, { onExit }) {
     polishChip.hidden = false;
     polishChip.classList.toggle('done', P.finished);
     polishChip.replaceChildren(P.finished ? icon('check', 13) : h('span.mini-spin'), P.finished ? 'Ready to export' : `Polishing ${doneN}/${POLISH_STEPS.length}`);
-    if (!S.edit.words.length && leftTabs.value() === 'transcript') {
+    if (!S.words.length && leftTabs.value() === 'transcript') {
       const card = transcriptBox.querySelector('.polish-card');
       if (card) card.replaceWith(polishCard()); else renderTranscript();
     }
   }
   async function autoPolish() {
-    S.polish = { steps: { look: 'done', zoom: hasVideo ? 'run' : 'skip', words: S.hasAudio ? 'run' : 'skip', clean: 'wait' }, notes: {}, detail: '', pct: null, finished: false };
+    // A camera-only take (recorder Camera mode) has no screen to zoom into: activity there is just someone moving.
+    const cameraOnly = !!project.media.cameraOnly || S.edit.layout?.mode === 'camera';
+    const zoomable = hasVideo && !cameraOnly;
+    S.polish = { steps: { look: 'done', zoom: zoomable ? 'run' : 'skip', words: S.hasAudio ? 'run' : 'skip', clean: 'wait' }, notes: {}, detail: '', pct: null, finished: false };
     if (!hasVideo) S.polish.notes.zoom = 'No video track';
+    else if (cameraOnly) S.polish.notes.zoom = 'Camera recording: no screen to zoom into';
     if (!S.hasAudio) S.polish.notes.words = 'No audio track';
     renderTranscript(); renderPolish();
     const summary = [];
@@ -1002,9 +1316,9 @@ export async function openEditor(root, project, media, { onExit }) {
     // is analysed either way: scenes and Find clips use it.
     const cursor = project.media?.cursor;
     const fromClicks = hasCursorClicks(cursor?.samples);
-    const activityJob = hasVideo ? activityEvents(S.screenBlob, S.duration, {}).then((ev) => { rememberActivity(ev); return ev; }) : null;
+    const activityJob = hasVideo ? projectActivity({}).then((ev) => { rememberActivity(ev); return ev; }) : null;
     const activityDone = activityJob?.catch(() => {}); // with clicks, a failed analysis only costs scenes and clips
-    const zoomJob = hasVideo ? (fromClicks ? Promise.resolve(zoomsFromCursor(cursor.samples, S.duration)) : activityJob.then((ev) => zoomsFromActivity(ev, S.duration, { sensitivity: 0.5 })))
+    const zoomJob = zoomable ? (fromClicks ? Promise.resolve(zoomsFromCursor(cursor.samples, S.duration)) : activityJob.then((ev) => zoomsInSegments(zoomsFromActivity(ev, S.duration, { sensitivity: 0.5 }))))
       .then((zooms) => {
         if (S.destroyed) return;
         if (zooms.length) { commit((e) => { e.zooms = [...e.zooms.filter((z) => !z.auto), ...zooms]; }, { rerender: 'none' }); summary.push(`${zooms.length} zoom${zooms.length > 1 ? 's' : ''}${fromClicks ? ' from your clicks' : ''}`); }
@@ -1017,7 +1331,7 @@ export async function openEditor(root, project, media, { onExit }) {
     let words = [];
     if (S.hasAudio) {
       try {
-        if (!S.pcm) { const res = await analyzeAudio(S.screenBlob, S.duration); S.pcm = res.pcm; if (!S.peaks) { S.peaks = res.peaks; tl.refresh(); } }
+        if (!S.pcm) { const res = await analyzeProjectAudio(); S.pcm = res.pcm; if (!S.peaks) { S.peaks = res.peaks; tl.refresh(); } }
         if (!S.pcm) throw new Error('Could not decode the audio track in this browser.');
         const model = (MODELS.find((m) => m.default) || MODELS[0]).id;
         const collected = [];
@@ -1046,7 +1360,7 @@ export async function openEditor(root, project, media, { onExit }) {
       commit((ed) => {
         ed.words = markFillers(words);
         for (const w of ed.words) if (w.filler === 'hard' && !w.deleted) { w.deleted = true; nf++; }
-        const sil = detectWordSilences(ed.words, S.duration);
+        const sil = pausesIn(ed.words, ed.segments);
         ed.cuts = ed.cuts.filter((c) => c.kind !== 'silence');
         for (const r of sil) ed.cuts.push({ id: uid('c'), ...r });
         np = sil.length; saved = totalDuration(sil);
@@ -1071,7 +1385,7 @@ export async function openEditor(root, project, media, { onExit }) {
   const copilotApi = {
     state: S.copilot,
     duration: S.duration,
-    getEdit: () => S.edit,
+    getEdit: () => (S.multi ? S.view : S.edit),
     commit: (make) => {
       const next = make();
       commit((e) => { for (const k of Object.keys(e)) delete e[k]; Object.assign(e, ensureEditShape(JSON.parse(JSON.stringify(next)))); });
@@ -1100,7 +1414,7 @@ export async function openEditor(root, project, media, { onExit }) {
   function renderLeft() {
     const tab = leftTabs.value();
     if (tab === 'transcript') {
-      fill(leftBody, S.edit.words.length ? transcriptTools : null, h('div.tx-wrap', transcriptScroller, selBar), srStatus);
+      fill(leftBody, S.words.length ? transcriptTools : null, h('div.tx-wrap', transcriptScroller, selBar), srStatus);
       if (!transcriptBox.childElementCount) renderTranscript();
     } else if (tab === 'copilot') leftBody.replaceChildren(copilotPanel(copilotApi));
     else if (tab === 'clips') leftBody.replaceChildren(clipsPanel());
@@ -1112,14 +1426,14 @@ export async function openEditor(root, project, media, { onExit }) {
   }
 
   function clipsPanel() {
-    if (!S.edit.words.length) return needTranscript('Finding clips');
+    if (!S.words.length) return needTranscript('Finding clips');
     const list = h('div.clip-list');
     let len = 'short';
     let clips = [];
     const batchBtn = h('button.btn.small', { onclick: () => exportReels(clips.slice(0, 3)) }, icon('download', 13), 'Export top 3 as reels');
     const run = () => {
       const opts = len === 'short' ? { minDur: 12, maxDur: 35 } : len === 'medium' ? { minDur: 25, maxDur: 60 } : { minDur: 50, maxDur: 90 };
-      clips = scoreClips(S.edit.words, { ...opts, count: 6, peaks: S.peaks, peaksPerSec: PEAKS_PER_SEC, activity: S.activity });
+      clips = scoreClips(S.words, { ...opts, count: 6, peaks: S.peaks, peaksPerSec: PEAKS_PER_SEC, activity: S.activity });
       batchBtn.disabled = !clips.length;
       list.replaceChildren(...(clips.length ? clips.map((c) => h('article.clip-card',
         h('div.clip-top', h('span.score', { title: 'Local score from the transcript (hook, pace, fillers, pauses), delivery energy and screen activity' }, String(c.score)), h('span.clip-time', `${fmtTime(c.start)} – ${fmtTime(c.end)} · ${Math.round(c.end - c.start)}s`)),
@@ -1127,7 +1441,7 @@ export async function openEditor(root, project, media, { onExit }) {
         h('div.signals', [['text', 'Words'], ['audio', 'Energy'], ['screen', 'Screen']].map(([k, label]) => h('span.signal', { title: `${label}: ${Math.round(c.signals[k] * 100)}%` }, h('i', { style: { width: `${Math.round(Math.max(0.04, c.signals[k]) * 100)}%` } }), label))),
         h('div.reasons', c.reasons.map((r) => h('span.tag', r))),
         h('div.row', h('button.btn.small', { onclick: () => { seek(c.start); play(); } }, icon('play', 12), 'Preview'),
-          h('button.btn.small.primary', { onclick: () => { commit((ed) => { ed.range = { start: c.start, end: c.end }; }); toast('Clip range set · switch to 9:16 for a reel', 'ok'); } }, icon('film', 13), 'Use as clip'),
+          h('button.btn.small.primary', { onclick: () => { commit((ed) => { ed.range = { start: c.start, end: c.end }; }); toast(S.multi ? 'Trimmed to this moment · ⌘Z to undo' : 'Clip range set · switch to 9:16 for a reel', 'ok'); } }, icon('film', 13), 'Use as clip'),
           h('button.btn.small', { title: 'Export this clip as a 9:16 reel with captions', onclick: () => exportReels([c]) }, icon('download', 13), 'Reel')))) : [h('p.muted', 'No clip-sized moments found yet. Try a longer length.')]));
     };
     const lenSeg = segmented([['short', '≤35s'], ['medium', '≤60s'], ['long', '≤90s']], len, (v) => { len = v; run(); });
@@ -1165,9 +1479,9 @@ export async function openEditor(root, project, media, { onExit }) {
         const kept = keptRanges(cuts, S.duration);
         const p = CAPTION_PRESETS[resolvePreset(edit.captions.preset)];
         const tr = edit.captions.language && edit.captions.translations?.[edit.captions.language];
-        const cues = tr ? translatedCues(tr) : buildCues(edit.words, { maxWords: p.maxWords, maxChars: p.maxChars });
+        const cues = tr ? translatedCues(tr) : buildCues(S.multi ? S.words : edit.words, { maxWords: p.maxWords, maxChars: p.maxChars });
         label.textContent = `Reel ${i + 1} of ${list.length}: “${c.title}”`;
-        const res = await exportVideo({ edit, kept, cues, screenBlob: S.screenBlob, cameraBlob: S.camBlob, cameraOffset: S.camOffset, cameras: camerasForExport(), hasAudio: S.hasAudio, overlays: logo, brollMedia: S.brollMedia, audioGainDb: await loudnessGainFor(edit, kept), musicBlob: edit.music ? S.musicBlob : null, ...bumpersFor(edit) }, { width, height, fps: 30, format: 'mp4', quality: 'high', captions: true }, {
+        const res = await exportVideo({ edit, kept, cues, cursor: S.cursor, ...sequenceCtx(), screenBlob: S.screenBlob, cameraBlob: S.camBlob, cameraOffset: S.camOffset, cameras: camerasForExport(), hasAudio: S.hasAudio, overlays: logo, brollMedia: S.brollMedia, audioGainDb: await loudnessGainFor(edit, kept), musicBlob: edit.music ? S.musicBlob : null, ...bumpersFor(edit) }, { width, height, fps: 30, format: 'mp4', quality: 'high', captions: true }, {
           signal: ctrl.signal,
           onProgress: (pr) => { bar.firstChild.style.width = `${Math.round(((i + pr.done) / list.length) * 100)}%`; },
         });
@@ -1188,13 +1502,13 @@ export async function openEditor(root, project, media, { onExit }) {
   }
 
   function publishPanel() {
-    if (!S.edit.words.length) return needTranscript('The publish kit');
+    if (!S.words.length) return needTranscript('The publish kit');
     const out = h('div.stack');
     const gen = h('button.btn.primary.wide', { onclick: async () => {
       gen.disabled = true;
       gen.replaceChildren(icon('sparkles', 16), 'Writing…');
-      const kit = await publishKit(S.edit.words);
-      const chapters = chaptersText(S.edit.words, S.duration, S.kept);
+      const kit = await publishKit(S.words);
+      const chapters = chaptersText(S.words, S.duration, S.kept);
       out.replaceChildren(
         copyField('Title', kit.title, 2),
         copyField('Description', kit.description, 5),
@@ -1204,7 +1518,7 @@ export async function openEditor(root, project, media, { onExit }) {
       gen.replaceChildren(icon('sparkles', 16), 'Regenerate');
     } }, icon('sparkles', 16), 'Write title, description & chapters');
     const thumbs = h('div.thumb-grid');
-    const thumbBtn = h('button.btn.wide', { disabled: !hasVideo, onclick: () => suggestThumbnails(thumbs, thumbBtn) }, icon('image', 16), 'Suggest thumbnails');
+    const thumbBtn = h('button.btn.wide', { disabled: !hasVideo || S.multi, title: S.multi ? 'Thumbnail ideas work on single recordings for now' : undefined, onclick: () => suggestThumbnails(thumbs, thumbBtn) }, icon('image', 16), 'Suggest thumbnails');
     return h('div.stack', h('div.panel-intro', h('h3', icon('share', 16), 'Publish kit'), h('p.muted', 'Titles, descriptions and chapter markers for YouTube, LinkedIn and Shorts. Generated locally.')), gen, out,
       h('div.panel-intro', h('h3', icon('image', 16), 'Thumbnail ideas'), h('p.muted', 'Three sharp, well-exposed frames from the edited video, rendered with your background and camera.')), thumbBtn, thumbs);
   }
@@ -1277,6 +1591,7 @@ export async function openEditor(root, project, media, { onExit }) {
     const tab = rightTabs.value();
     const E = S.edit;
     const set = (fn) => commit(fn, { rerender: 'none' });
+    if (tab !== 'style' && S.cropEdit) setCropEdit(false);
     if (tab === 'layout') {
       const hasCam = !!S.camBlob;
       const L = E.layout;
@@ -1285,7 +1600,7 @@ export async function openEditor(root, project, media, { onExit }) {
         section('Camera layout',
           segmented([['pip', 'Bubble'], ['split', 'Split'], ['screen', 'Screen'], ['camera', 'Camera']], hasCam ? L.mode : 'screen', (v) => { set((e) => { e.layout.mode = v; }); renderRight(); }, hasCam ? '' : 'disabled'),
           hasCam ? null : h('p.muted.small', 'No camera in this project. Add a separately recorded camera (phone, DSLR, webcam) and Slipstream lines it up by its audio.'),
-          hasCam ? null : addCameraButton()),
+          hasCam || S.multi ? null : addCameraButton()),
         hasCam && L.mode === 'pip' ? section('Bubble', h('div.row.gap', corner, h('div.grow',
           segmented([['circle', 'Circle'], ['rounded', 'Rounded'], ['wide', 'Wide']], L.shape, (v) => set((e) => { e.layout.shape = v; })),
           slider('Size', { min: 0.12, max: 0.42, step: 0.01, value: L.size, format: (v) => `${Math.round(v * 100)}%`, onInput: (v) => set((e) => { e.layout.size = v; }) })))) : null,
@@ -1305,17 +1620,56 @@ export async function openEditor(root, project, media, { onExit }) {
       const wallBtn = ([k, w]) => h('button.sw.wall', { class: cur === k ? 'on' : '', title: w.label, 'aria-label': `${w.label} background`, 'aria-pressed': String(cur === k), style: { backgroundImage: `url(${wallpaperURL(k)})`, backgroundColor: w.tone[1] }, onclick: () => pick(k) });
       const grads = Object.entries(WALLPAPERS).filter(([, w]) => w.kind === 'gradient');
       const photos = Object.entries(WALLPAPERS).filter(([, w]) => w.kind === 'photo');
+      // Frame (E-01): on a background or full screen, for the whole video or the Layout track section at the playhead.
+      const sec = (S.selFrame && (E.frameSections || []).find((q) => q.id === S.selFrame)) || frameSectionAt(E.frameSections, S.t);
+      const scope = S.frameScope || (sec ? 'section' : 'whole');
+      const shown = sec ? sec.frame : frameOf(St);
+      const fillFull = shown === 'full' && St.fit !== 'fit';
+      const corners = slider('Corners', { min: 0, max: 0.05, step: 0.002, value: St.radius, format: (v) => `${Math.round(v * 1000)}`, onInput: (v) => commit((e) => { e.style.radius = v; }, { rerender: 'none', coalesce: 'radius' }) });
+      const shadow = slider('Shadow', { min: 0, max: 1, step: 0.05, value: St.shadow, format: (v) => `${Math.round(v * 100)}%`, onInput: (v) => commit((e) => { e.style.shadow = v; }, { rerender: 'none', coalesce: 'shadow' }) });
+      const presetBtns = FRAME_PRESETS.filter((p) => ['tight', 'balanced', 'roomy'].includes(p.id)).map((p) => h('button', { class: Math.abs(St.padding - p.padding) < 1e-4 ? 'on' : '', 'aria-pressed': String(Math.abs(St.padding - p.padding) < 1e-4), dataset: { v: String(p.padding) }, onclick: () => { set((e) => { e.style.padding = p.padding; }); renderRight(); } }, h('b', p.label), h('small', `${Math.round(p.padding * 100)}%`)));
+      const syncPresets = (v) => { for (const b of presetBtns) { const on = Math.abs(v - Number(b.dataset.v)) < 1e-4; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)); } };
+      const amount = slider('Background amount', { min: 0, max: 0.2, step: 0.005, value: St.padding, format: (v) => `${Math.round(v * 1000) / 10}%`, onInput: (v) => { commit((e) => { e.style.padding = v; }, { rerender: 'none', coalesce: 'padding' }); syncPresets(v); } });
+      const sd = dimsOf(screenEl) || (project.media.width ? { w: project.media.width, h: project.media.height } : null);
+      const crop = normCrop(E.frame?.crop);
+      const area = sd && crop ? { w: sd.w * crop[2], h: sd.h * crop[3] } : sd;
+      const note = area ? cropNote(area.w, area.h, E.aspect, St.fit === 'fit' ? 'fit' : 'fill') : '';
       fill(rightBody,
-        section('Background',
+        hasVideo ? section('Frame',
+          h('div.frame-pick', { role: 'radiogroup', 'aria-label': 'Frame' }, [['background', 'On background', 'monitor'], ['full', 'Full screen', 'aspect']].map(([v, label, ic]) => h('button', { role: 'radio', 'aria-checked': String(shown === v), class: shown === v ? 'on' : '', onclick: () => setFrame(v, scope, sec) }, icon(ic, 18), h('span', label)))),
+          shown === 'background' ? [
+            amount, h('div.slider-scale', h('span', 'Full'), h('span', 'Wide')),
+            h('div.frame-presets', presetBtns),
+            corners, shadow,
+          ] : [
+            h('p.sub-label', 'Fit'),
+            segmented([['fill', 'Fill frame'], ['fit', 'Fit inside']], St.fit === 'fit' ? 'fit' : 'fill', (v) => { set((e) => { e.style.fit = v; }); renderRight(); }, 'full-seg'),
+            St.fit !== 'fit' ? toggle('Keep the cursor in view', St.followCursor !== false, (v) => set((e) => { e.style.followCursor = v; })) : null,
+            note ? h('p.muted.small', `${note} ${St.fit === 'fit' ? 'Corners and shadow are off.' : 'Background, corners and shadow are off.'}`) : null,
+            St.fit !== 'fit' && St.followCursor !== false && !S.cursor ? h('p.muted.small', 'The crop follows your zooms. Recordings from the desktop app follow the pointer.') : null,
+          ]) : null,
+        hasVideo ? section('Applies to',
+          segmented([['whole', 'Whole video'], ['section', 'This section']], scope, (v) => { S.frameScope = v; renderRight(); }, 'full-seg'),
+          h('p.muted.small', scope === 'section' && sec ? `Section ${fmtTime(sec.start)} – ${fmtTime(sec.end)} on the Layout track. L adds another at the playhead.` : 'Pick a section on the Layout track to mix full screen and background in one video.')) : null,
+        hasVideo && !S.multi ? section('Area',
+          h('p.muted.small', crop && sd ? `Showing ${Math.round(sd.w * crop[2])} × ${Math.round(sd.h * crop[3])} of ${sd.w} × ${sd.h}. Zooms, captions and full screen work inside the area.` : 'Crop the recording to part of the screen, like an Area recording.'),
+          h('div.row',
+            h('button.btn.small', { class: S.cropEdit ? 'on' : '', 'aria-pressed': String(!!S.cropEdit), onclick: () => setCropEdit(!S.cropEdit) }, icon('aspect', 13), S.cropEdit ? 'Done' : crop ? 'Adjust area' : 'Crop to an area'),
+            crop ? h('button.btn.small', { onclick: () => { commit((e) => { if (e.frame) { delete e.frame.crop; if (!Object.keys(e.frame).length) delete e.frame; } }); } }, 'Reset') : null),
+          S.cropEdit ? segmented(Object.keys(CROP_LOCKS).map((k) => [k, k === 'free' ? 'Free' : k]), S.cropEdit.lock, (v) => {
+            S.cropEdit.lock = v;
+            const d = dimsOf(screenEl);
+            if (v !== 'free' && d) { const next = lockAspect(normCrop(E.frame?.crop) || [0, 0, 1, 1], v, d); commit((e) => { e.frame = { ...(e.frame || {}), crop: next.map((n) => Math.round(n * 1e4) / 1e4) }; }, { rerender: 'none' }); }
+            S.dirty = true;
+          }, 'tiny') : null) : null,
+        h('section.insp', { class: fillFull ? 'dimmed' : '' }, h('h4', 'Wallpaper', fillFull ? h('span.dim-note', 'Hidden in full screen') : null),
           h('div.swatches.walls', grads.map(wallBtn)),
           h('p.sub-label', 'Photos'),
           h('div.swatches.walls', photos.map(wallBtn),
             h('button.sw.wall.blur', { class: cur === 'blur' ? 'on' : '', title: 'Blur of your screen', 'aria-pressed': String(cur === 'blur'), onclick: () => pick('blur') }, h('span', 'Blur')),
             h('label.sw.wall.solid', { class: cur === 'solid' ? 'on' : '', title: 'Solid colour', style: { background: St.solid } }, h('span', 'Colour'), h('input', { type: 'color', value: St.solid, 'aria-label': 'Solid colour', oninput: (ev) => { set((e) => { e.style.bg = 'solid'; e.style.solid = ev.target.value; }); } })))),
-        section('Window',
-          slider('Padding', { min: 0, max: 0.14, step: 0.005, value: St.padding, format: (v) => `${Math.round(v * 1000) / 10}%`, onInput: (v) => set((e) => { e.style.padding = v; }) }),
-          slider('Corners', { min: 0, max: 0.05, step: 0.002, value: St.radius, format: (v) => `${Math.round(v * 1000)}`, onInput: (v) => set((e) => { e.style.radius = v; }) }),
-          slider('Shadow', { min: 0, max: 1, step: 0.05, value: St.shadow, format: (v) => `${Math.round(v * 100)}%`, onInput: (v) => set((e) => { e.style.shadow = v; }) })),
+        hasVideo && shown === 'full' ? h('section.insp.dimmed', h('h4', 'Corners and shadow', h('span.dim-note', 'Hidden in full screen')), corners, shadow) : null,
+        !hasVideo ? section('Window', amount, corners, shadow) : null,
         S.hasAudio ? section('Sound',
           toggle('Even out loudness for social (−14 LUFS)', E.audio.normalize !== false, (v) => { set((e) => { e.audio.normalize = v; }); updatePreviewGain(); }),
           h('p.muted.small', soundNote()),
@@ -1330,15 +1684,17 @@ export async function openEditor(root, project, media, { onExit }) {
         h('span.pv', { style: { '--acc': C.color } }, h('span', h('span', 'Ship it '), h('i', 'now'))), h('span.pl', p.label))));
       const colors = ['#ffd34d', '#ffffff', '#8b93ff', '#5ad1b0', '#ff8a6b', '#f5a8d4'];
       fill(rightBody,
-        section('Captions', toggle('Show captions', C.enabled, (v) => set((e) => { e.captions.enabled = v; })), !S.edit.words.length ? h('p.muted.small', S.polish ? 'Captions appear when transcription finishes.' : 'Transcribe first to generate captions.') : null),
+        section('Captions', toggle('Show captions', C.enabled, (v) => set((e) => { e.captions.enabled = v; })), !S.words.length ? h('p.muted.small', S.polish ? 'Captions appear when transcription finishes.' : 'Transcribe first to generate captions.') : null),
         section('Look', presets, h('p.muted.small', { class: 'preset-note' }, ({ studio: 'Clean sans on a soft dark plate. Words brighten as they’re spoken.', cinema: 'Film subtitles: no plate, a soft shadow, up to two balanced lines.', editorial: 'An italic serif for calm, documentary-style pieces.', bold: 'Two or three words at a time for vertical clips.' })[curP])),
         curP === 'bold' ? section('Highlight', h('div.swatches.small', colors.map((c) => h('button.sw', { class: C.color === c ? 'on' : '', style: { background: c }, title: c, 'aria-label': `Highlight ${c}`, onclick: () => { set((e) => { e.captions.color = c; }); renderRight(); } })))) : null,
         section('Placement',
           segmented([['top', 'Top'], ['middle', 'Middle'], ['bottom', 'Bottom']], C.position, (v) => set((e) => { e.captions.position = v; })),
           slider('Size', { min: 0.7, max: 1.5, step: 0.05, value: C.size, format: (v) => `${Math.round(v * 100)}%`, onInput: (v) => set((e) => { e.captions.size = v; }) }),
           toggle('All caps', caps, (v) => set((e) => { e.captions.uppercase = v; }))),
-        S.edit.words.length ? translateSection() : null,
-        section('Subtitle files', h('div.row', h('button.btn.small', { disabled: !S.edit.words.length, onclick: () => downloadSubs('srt') }, icon('download', 13), '.srt'), h('button.btn.small', { disabled: !S.edit.words.length, onclick: () => downloadSubs('vtt') }, icon('download', 13), '.vtt')), h('p.muted.small', `Timed to the edited video, after cuts${C.language ? ` · in ${langLabel(C.language)}` : ''}.`)));
+        S.words.length ? translateSection() : null,
+        section('Subtitle files', h('div.row', h('button.btn.small', { disabled: !S.words.length, onclick: () => downloadSubs('srt') }, icon('download', 13), '.srt'), h('button.btn.small', { disabled: !S.words.length, onclick: () => downloadSubs('vtt') }, icon('download', 13), '.vtt')), h('p.muted.small', `Timed to the edited video, after cuts${C.language ? ` · in ${langLabel(C.language)}` : ''}.`)));
+    } else if (tab === 'autoedit' && ae) {
+      ae.renderPanel(rightBody);
     } else if (tab === 'brand') {
       renderBrand();
     } else if (tab === 'annotate') {
@@ -1365,6 +1721,52 @@ export async function openEditor(root, project, media, { onExit }) {
           h('div.row', h('button.btn.small', { class: S.focusPick ? 'on' : '', onclick: () => setFocusPick(!S.focusPick) }, icon('target', 13), S.focusPick ? 'Picking… click preview' : 'Aim on preview'),
             h('button.btn.small.danger', { onclick: () => { commit((e) => { e.zooms = e.zooms.filter((x) => x.id !== selZ.id); }); S.selZoom = null; setFocusPick(false); renderRight(); } }, icon('trash', 13), 'Delete'))) : null);
     }
+  }
+
+  // ---- Layout track (E-01): full screen or on a background per section --------------------------------------
+  const FRAME_LABEL = { background: 'On background', full: 'Full screen' };
+  /** The stretch the Style tab's "This section" changes when no section is under the playhead. */
+  function frameTargetRange() {
+    if (S.sel && S.sel.end - S.sel.start >= 0.2) return { ...S.sel };
+    const secs = S.edit.frameSections || [];
+    if (secs.length) {
+      const run = frameRuns(S.edit.style, secs, S.duration).find((r) => S.t >= r.start && S.t < r.end);
+      if (run) return { start: run.start, end: run.end };
+    }
+    return { start: S.t, end: Math.min(S.duration, S.t + 5) };
+  }
+  function setFrame(v, scope, sec) {
+    if (scope === 'whole') {
+      commit((e) => { e.style.frame = v; e.frameSections = []; });
+      S.selFrame = null;
+    } else {
+      let id = sec?.id || null;
+      commit((e) => {
+        const list = e.frameSections || [];
+        const q = id && list.find((x) => x.id === id);
+        if (q) { q.frame = v; return; }
+        const r = frameTargetRange();
+        e.frameSections = setFrameSection(list, r.start, r.end, v);
+        id = frameSectionAt(e.frameSections, (r.start + r.end) / 2)?.id || null;
+      });
+      S.selFrame = id;
+      S.sel = null;
+    }
+    renderRight();
+    tl.refresh();
+  }
+  /** `L`: a section at the playhead (or over the timeline selection) in the other frame. */
+  function addFrameSection() {
+    if (!hasVideo) return;
+    const r = S.sel && S.sel.end - S.sel.start >= 0.2 ? { ...S.sel } : { start: S.t, end: Math.min(S.duration, S.t + 5) };
+    if (r.end - r.start < 0.2) return;
+    const frame = rawFrameAt(S.edit.style, S.edit.frameSections, r.start + 0.01) === 'full' ? 'background' : 'full';
+    let id = null;
+    commit((e) => { e.frameSections = setFrameSection(e.frameSections || [], r.start, r.end, frame); id = frameSectionAt(e.frameSections, (r.start + r.end) / 2)?.id || null; });
+    S.sel = null;
+    S.selFrame = id;
+    tl.openFrame(id);
+    toast(`${FRAME_LABEL[frame]} from ${fmtTime(r.start)} to ${fmtTime(r.end)} · change it on the Layout track`, 'ok', 2400);
   }
 
   // ---- scenes (S-01) ---------------------------------------------------------------------------------
@@ -1394,7 +1796,7 @@ export async function openEditor(root, project, media, { onExit }) {
     btn.disabled = true;
     try {
       const act = await ensureActivity((p) => { btn.textContent = `Analyzing screen… ${Math.round(p * 100)}%`; });
-      const auto = autoScenes(act, S.edit.words, S.duration, { base: S.edit.layout });
+      const auto = autoScenes(act, S.words, S.duration, { base: S.edit.layout });
       commit((e) => {
         let next = auto;
         for (const m of e.scenes.filter((q) => !q.auto)) next = setScene(next, m.start, m.end, m.layout);
@@ -1600,7 +2002,7 @@ export async function openEditor(root, project, media, { onExit }) {
         h('button.btn.small', { class: a.id === shown ? 'on' : '', onclick: () => commit((e) => { e.layout.angle = a.id; }) }, a.id === shown ? 'Showing' : 'Show'),
         a.id !== 'camera' ? h('button.icon-btn', { title: `Remove ${a.name}`, 'aria-label': `Remove ${a.name}`, onclick: () => { a.el.pause(); S.angles = S.angles.filter((x) => x !== a); saveAngles(); commit((e) => { if (e.layout.angle === a.id) delete e.layout.angle; e.scenes = (e.scenes || []).filter((sc) => sc.layout?.angle !== a.id); }); } }, icon('x', 13)) : null))),
       Object.keys(mapping).length >= 2
-        ? h('button.btn.small', { onclick: () => { const sc = speakerScenes(S.edit.words, mapping, S.duration); commit((e) => { e.scenes = sc; }); toast(`Cut between ${S.angles.length} angles at ${sc.length} speaker turns · ⌘Z to undo`, 'ok'); } }, icon('people', 13), 'Switch angles by speaker')
+        ? h('button.btn.small', { onclick: () => { const sc = speakerScenes(S.words, mapping, S.duration); commit((e) => { e.scenes = sc; }); toast(`Cut between ${S.angles.length} angles at ${sc.length} speaker turns · ⌘Z to undo`, 'ok'); } }, icon('people', 13), 'Switch angles by speaker')
         : h('p.muted.small', speakers.length ? 'Assign a speaker to each angle to switch automatically when they talk.' : 'Detect speakers in the transcript to switch angles automatically.'),
       addCameraButton());
   }
@@ -1624,7 +2026,7 @@ export async function openEditor(root, project, media, { onExit }) {
       let offset = 0, note = 'Placed at the start (no audio to match).';
       if (info.hasAudio && S.hasAudio) {
         btn.textContent = 'Matching audio…';
-        const screenPcm = S.pcm || (await analyzeAudio(S.screenBlob, S.duration)).pcm;
+        const screenPcm = S.pcm || (await analyzeProjectAudio()).pcm;
         S.pcm = screenPcm;
         const cam = await analyzeAudio(file, info.duration);
         const r = screenPcm && cam.pcm ? audioOffset(screenPcm, cam.pcm, 16000, { maxLag: Math.min(300, Math.max(S.duration, info.duration)) }) : null;
@@ -1909,7 +2311,7 @@ export async function openEditor(root, project, media, { onExit }) {
     try {
       const ac = new AudioContext();
       const gain = ac.createGain();
-      ac.createMediaElementSource(screenEl).connect(gain).connect(ac.destination);
+      for (const el of S.multi ? Object.values(S.clipEls).filter((x) => x instanceof HTMLVideoElement) : [screenEl]) ac.createMediaElementSource(el).connect(gain).connect(ac.destination);
       previewAudio = { ac, gain };
       updatePreviewGain();
     } catch { /* element already routed or audio blocked: preview plays at the original level */ }
@@ -1934,7 +2336,7 @@ export async function openEditor(root, project, media, { onExit }) {
   }
   async function loudnessGainFor(edit, kept) {
     if (!S.hasAudio || edit.audio?.normalize === false) return 0;
-    if (!S.pcm) S.pcm = (await analyzeAudio(S.screenBlob, S.duration).catch(() => ({}))).pcm || null;
+    if (!S.pcm) S.pcm = (await analyzeProjectAudio().catch(() => ({}))).pcm || null;
     return gainDbFor(edit, kept);
   }
   function updatePreviewGain() {
@@ -1942,7 +2344,7 @@ export async function openEditor(root, project, media, { onExit }) {
   }
   function soundNote() {
     if (!S.pcm && S.hasAudio && !S.pcmLoading) {
-      S.pcmLoading = analyzeAudio(S.screenBlob, S.duration).then((res) => { S.pcm = res.pcm; if (!S.peaks) S.peaks = res.peaks; if (rightTabs.value() === 'style') renderRight(); }).catch(() => {});
+      S.pcmLoading = analyzeProjectAudio().then((res) => { S.pcm = res.pcm; if (!S.peaks) S.peaks = res.peaks; if (rightTabs.value() === 'style') renderRight(); }).catch(() => {});
     }
     const r = measureLoudness(S.kept);
     if (!r || !Number.isFinite(r.lufs)) return 'Measures the edited audio and sets one gain so it plays at the level YouTube, TikTok and Instagram use, without clipping.';
@@ -1962,9 +2364,9 @@ export async function openEditor(root, project, media, { onExit }) {
         toast(zooms.length ? `Added ${zooms.length} zoom${zooms.length > 1 ? 's' : ''} from your clicks — drag them on the timeline to adjust` : 'No clicks to zoom on in this recording', zooms.length ? 'ok' : 'info');
         return;
       }
-      const events = await activityEvents(S.screenBlob, S.duration, { onProgress: (p) => { btn.textContent = `Analyzing screen… ${Math.round(p * 100)}%`; } });
+      const events = await projectActivity({ onProgress: (p) => { btn.textContent = `Analyzing screen… ${Math.round(p * 100)}%`; } });
       rememberActivity(events);
-      const zooms = zoomsFromActivity(events, S.duration, { sensitivity });
+      const zooms = zoomsInSegments(zoomsFromActivity(events, S.duration, { sensitivity }));
       commit((e) => { e.zooms = [...e.zooms.filter((z) => !z.auto), ...zooms]; });
       toast(zooms.length ? `Added ${zooms.length} zoom${zooms.length > 1 ? 's' : ''} — drag them on the timeline to adjust` : 'No focused activity found — try higher sensitivity', zooms.length ? 'ok' : 'info');
     } catch (err) {
@@ -1984,9 +2386,9 @@ export async function openEditor(root, project, media, { onExit }) {
   // ---- timeline --------------------------------------------------------------------------------
   function buildTimeline() {
     const coarse = matchMedia('(pointer: coarse)').matches;
-    const LANES = { ruler: 22, wave: 64, zoom: coarse ? 34 : 26, scene: coarse ? 30 : 22, notes: coarse ? 30 : 22, broll: coarse ? 30 : 22, cap: 22 };
+    const LANES = { ruler: 22, wave: 64, clips: coarse ? 50 : 44, motion: 28, zoom: coarse ? 34 : 26, frame: coarse ? 30 : 24, scene: coarse ? 30 : 22, notes: coarse ? 30 : 22, broll: coarse ? 30 : 22, cap: 22 };
     const hasCamLane = !!S.camBlob;
-    const heads = h('div.tl-heads', h('div', { style: { height: `${LANES.ruler}px` } }), h('div.tl-label', { style: { height: `${LANES.wave}px` } }, icon('film', 13), 'Video'), h('div.tl-label', { style: { height: `${LANES.zoom}px` } }, icon('zoom', 13), 'Zoom'), hasCamLane ? h('div.tl-label', { style: { height: `${LANES.scene}px` } }, icon('scenes', 13), 'Scenes') : null, h('div.tl-label', { style: { height: `${LANES.notes}px` } }, icon('annotate', 13), 'Annotate'), h('div.tl-label', { style: { height: `${LANES.broll}px` } }, icon('image', 13), 'B-roll'), h('div.tl-label', { style: { height: `${LANES.cap}px` } }, icon('captions', 13), 'Captions'));
+    const heads = h('div.tl-heads', h('div', { style: { height: `${LANES.ruler}px` } }), h('div.tl-label', { style: { height: `${LANES.wave}px` } }, icon(S.multi ? 'music' : 'film', 13), S.multi ? 'Sound' : 'Video'), S.multi ? h('div.tl-label', { style: { height: `${LANES.clips}px` } }, icon('film', 13), 'Clips') : null, S.multi ? h('div.tl-label', { style: { height: `${LANES.motion}px` } }, icon('silence', 13), 'Motion') : null, h('div.tl-label', { style: { height: `${LANES.zoom}px` } }, icon('zoom', 13), 'Zoom'), hasVideo ? h('div.tl-label', { style: { height: `${LANES.frame}px` } }, icon('layout', 13), 'Layout') : null, hasCamLane ? h('div.tl-label', { style: { height: `${LANES.scene}px` } }, icon('scenes', 13), 'Scenes') : null, h('div.tl-label', { style: { height: `${LANES.notes}px` } }, icon('annotate', 13), 'Annotate'), h('div.tl-label', { style: { height: `${LANES.broll}px` } }, icon('image', 13), 'B-roll'), h('div.tl-label', { style: { height: `${LANES.cap}px` } }, icon('captions', 13), 'Captions'));
     const cv = h('canvas.tl-canvas');
     const cg = cv.getContext('2d');
     const cutsLayer = h('div.tl-cuts', { role: 'group', 'aria-label': 'Cuts. Each cut can be clicked to restore it.' });
@@ -1996,13 +2398,26 @@ export async function openEditor(root, project, media, { onExit }) {
     const brollLane = h('div.tl-lane.broll', { style: { height: `${LANES.broll}px` }, role: 'group', 'aria-label': 'B-roll lane: images and clips over the screen' });
     const notesLane = h('div.tl-lane.notes', { style: { height: `${LANES.notes}px` }, role: 'group', 'aria-label': 'Annotate lane: privacy masks and annotations. Drag to move, drag the edges to change when they show.' });
     const sceneLane = hasCamLane ? h('div.tl-lane.scene', { style: { height: `${LANES.scene}px` }, role: 'group', 'aria-label': 'Scenes lane: per-segment camera layouts' }) : null;
+    // Multi-clip projects (AE-01): the clips in playing order. Drag one sideways to reorder; Alt+arrows move the
+    // focused clip, Delete removes it from the edit (the file stays in the project).
+    // The A6 motion curve: each clip's motion over the part it plays, on the output timeline (from the cached analysis).
+    const motionLane = S.multi ? h('div.tl-lane.motion', { style: { height: `${LANES.motion}px` }, 'aria-hidden': 'true' }) : null;
+    const clipsLane = S.multi ? h('div.tl-lane.clips', { style: { height: `${LANES.clips}px` }, role: 'group', 'aria-label': 'Clips in playing order. Drag a clip to reorder it; Alt+arrow keys move the focused clip, Delete removes it.' }) : null;
+    const clipCount = h('span.muted.small.tl-count');
+    const addClipsInput = h('input', { type: 'file', multiple: true, accept: 'video/*,image/*,audio/*,.mkv,.mov,.m4a,.mp3,.wav', hidden: true, onchange: (e) => { addClips([...e.target.files]); e.target.value = ''; } });
+    const frameLane = hasVideo ? h('div.tl-lane.frame', { style: { height: `${LANES.frame}px` }, role: 'group', 'aria-label': 'Layout track: full screen or on a background. L adds a section at the playhead.' }) : null;
+    let framePop = null; // { section: id | null, start, end } of the run whose popover is open
+    const popEl = h('div.tl-pop', { role: 'dialog', 'aria-label': 'Layout section', hidden: true });
     const capLane = h('div.tl-lane.cap', { style: { height: `${LANES.cap}px` }, role: 'group', 'aria-label': 'Captions lane' });
     const ph = h('div.tl-playhead', h('span'));
-    const inner = h('div.tl-inner', cv, h('div.tl-lane.ruler', { style: { height: `${LANES.ruler}px` }, title: 'Drag to scrub (with sound)' }), h('div.tl-lane.wave', { style: { height: `${LANES.wave}px` }, role: 'group', 'aria-label': 'Video and audio. Drag to select a range, Shift-drag to extend it.' }, cutsLayer, propLayer, selLayer), zoomLane, sceneLane, notesLane, brollLane, capLane, ph);
+    const inner = h('div.tl-inner', cv, h('div.tl-lane.ruler', { style: { height: `${LANES.ruler}px` }, title: 'Drag to scrub (with sound)' }), h('div.tl-lane.wave', { style: { height: `${LANES.wave}px` }, role: 'group', 'aria-label': 'Video and audio. Drag to select a range, Shift-drag to extend it.' }, cutsLayer, propLayer, selLayer), clipsLane, motionLane, zoomLane, frameLane, sceneLane, notesLane, brollLane, capLane, ph);
     const view = h('div.tl-view', inner);
     const zoomIn = slider('', { min: 1, max: 60, step: 1, value: 1, format: () => '', onInput: (v) => { setScale(v); } });
     const selActions = h('div.tl-actions', { hidden: true });
-    const el = h('section.timeline', h('div.tl-bar', h('div.tl-bar-left', h('span.tl-title', 'Timeline'), h('span.muted.small', 'Drag to select · Del cuts · Z zooms · C sets clip')), selActions, h('div.tl-scale', icon('search', 13), zoomIn)), h('div.tl-body', heads, view));
+    const el = h('section.timeline', h('div.tl-bar', h('div.tl-bar-left', h('span.tl-title', 'Timeline'), S.multi ? clipCount : null, S.multi ? h('button.btn.small.ghost', { title: 'Add videos or photos to the end', onclick: () => addClipsInput.click() }, icon('plus', 13), 'Add clips', addClipsInput) : null, ae ? ae.button : null, h('span.muted.small', S.multi ? `Drag a clip to reorder · ${navigator.platform?.includes('Mac') ? 'Option' : 'Alt'}-drag in the source strip to trim freely · L layout` : `Drag to select · Del cuts · Z zooms${hasVideo ? ' · L layout' : ''} · C sets clip`)), selActions, h('div.tl-scale', icon('search', 13), zoomIn)), ae ? ae.stripEl : null, h('div.tl-body', heads, view), ae ? ae.keepEl : null, popEl, ae ? ae.pop : null);
+    // Left out moments (AE-08) dropped on the Clips lane land on the nearest beat (or cut) to where they're dropped.
+    clipsLane?.addEventListener('dragover', (e) => { if (e.dataTransfer.types.includes('application/x-slipstream-moment')) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } });
+    clipsLane?.addEventListener('drop', (e) => { const j = e.dataTransfer.getData('application/x-slipstream-moment'); if (!j) return; e.preventDefault(); ae?.dropMoment(j, timeAt(e.clientX)); });
     let mult = 1;
 
     function setScale(m) {
@@ -2071,16 +2486,26 @@ export async function openEditor(root, project, media, { onExit }) {
         }
       } else {
         cg.fillStyle = 'rgba(255,255,255,0.25)';
-        cg.fillText('Analyzing audio…', 10, mid + 3);
+        cg.fillText(S.hasAudio ? 'Analyzing audio…' : 'No sound', 10, mid + 3);
       }
     }
     function refresh() {
       drawCanvas();
-      const props = S.proposed ? S.edit.words.filter((w) => S.proposed.has(String(w.id))) : [];
+      const props = S.proposed ? S.words.filter((w) => S.proposed.has(String(w.id))) : [];
       propLayer.replaceChildren(...mergeRanges(props.map((w) => ({ start: w.start, end: w.end })), 0.3).map((r) => h('div.tl-prop', { style: { left: `${x(r.start)}px`, width: `${Math.max(2, x(r.end) - x(r.start))}px` }, title: 'Proposed cut' })));
       cutsLayer.replaceChildren(...S.cuts.map((c) => h('div.tl-cut', { style: { left: `${x(c.start)}px`, width: `${Math.max(2, x(c.end) - x(c.start))}px` }, title: `Cut ${fmtTime(c.start, true)}–${fmtTime(c.end, true)} · click to restore`, onpointerdown: (e) => { e.stopPropagation(); }, onclick: () => restoreCut(c) })));
       zoomLane.replaceChildren(...S.edit.zooms.map((z) => zoomBlock(z)));
+      if (clipsLane) {
+        const segs = sequenceSegments(S.edit.segments);
+        clipsLane.replaceChildren(...segs.map((s, i) => clipBlock(s, i, segs)));
+        const from = S.edit.autoEdit?.result?.from;
+        const used = new Set(segs.map((s) => s.asset)).size;
+        clipCount.textContent = `${used} clip${used === 1 ? '' : 's'} · ${from ? `${fmtTime(from)} cut to ${fmtTime(S.duration)}` : fmtTime(S.duration)}`;
+        drawMotionLane(segs);
+      }
       sceneLane?.replaceChildren(...(S.edit.scenes || []).map((sc) => sceneBlock(sc)));
+      frameLane?.replaceChildren(...frameRuns(S.edit.style, S.edit.frameSections, S.duration).map((r) => frameBlock(r)));
+      renderFramePop();
       const pickOverlay = (list, id) => { S.selOverlay = { list, id }; if (rightTabs.value() !== 'annotate') rightTabs.select('annotate'); else renderRight(); S.dirty = true; refresh(); };
       notesLane.replaceChildren(
         ...(S.edit.masks || []).map((m) => rangeBlock(m, { cls: `tl-note mask${m.id === S.selOverlay?.id ? ' on' : ''}`, label: TOOL_LABEL[m.mode] || 'Blur', list: 'masks', min: 0.2, select: () => pickOverlay('masks', m.id) })),
@@ -2100,6 +2525,7 @@ export async function openEditor(root, project, media, { onExit }) {
           h('button.btn.small', { onclick: () => zoomSelection() }, icon('zoom', 13), 'Zoom'),
           h('button.btn.small', { onclick: () => clipSelection() }, icon('film', 13), 'Clip'),
           hasCamLane ? h('button.btn.small', { title: 'Change the camera layout for this range', onclick: () => { const r = S.sel; S.sel = null; addSceneAt(r.start, r.end); } }, icon('scenes', 13), 'Scene') : null,
+          hasVideo ? h('button.btn.small', { title: 'Full screen or on a background for this range (L)', onclick: () => addFrameSection() }, icon('layout', 13), 'Layout') : null,
           h('button.icon-btn', { title: 'Clear selection', onclick: () => { S.sel = null; refresh(); } }, icon('x', 14)));
       } else { selLayer.hidden = true; selActions.hidden = true; }
       playhead();
@@ -2111,6 +2537,89 @@ export async function openEditor(root, project, media, { onExit }) {
         if (px > view.clientWidth - 40 || px < 0) view.scrollLeft = x(S.t) - 60;
       }
     }
+    function drawMotionLane(segs) {
+      if (!motionLane) return;
+      const H = LANES.motion, pad = 4;
+      const lines = [];
+      for (const s of segs) {
+        const m = ae?.motionOf(s.asset);
+        if (!m?.curve?.length) continue;
+        const fps = m.fps || 10, sp = segmentSpeed(s);
+        let max = 0;
+        for (const v of m.curve) if (v > max) max = v;
+        if (!(max > 0)) continue;
+        const pts = [];
+        const step = Math.max(1 / fps / sp, 2 / Math.max(1e-6, S.pps)); // about one point per 2 px
+        for (let t = s.start; t <= s.end + 1e-9; t += step) {
+          const i = Math.min(m.curve.length - 1, Math.max(0, Math.round((s.sourceIn + (t - s.start) * sp) * fps)));
+          pts.push(`${x(Math.min(t, s.end)).toFixed(1)},${(pad + (H - pad * 2) * (1 - Math.min(1, m.curve[i] / max))).toFixed(1)}`);
+        }
+        if (pts.length > 1) lines.push(`<polyline points="${pts.join(' ')}"/>`);
+      }
+      motionLane.innerHTML = lines.length ? `<svg width="${Math.ceil(x(S.duration))}" height="${H}" viewBox="0 0 ${Math.ceil(x(S.duration))} ${H}">${lines.join('')}</svg>` : '';
+    }
+    /** A segment on the Clips lane: number of its clip, a strip of its picture, its length. */
+    function clipBlock(seg, i, segs) {
+      const c = clipList.find((x) => x.id === seg.asset) || { name: seg.asset };
+      const n = clipNumber(seg.asset);
+      const thumb = S.clipThumbs[seg.asset];
+      const b = h('div.tl-clip', {
+        class: `${seg.id === S.selSeg ? 'on' : ''}${c.kind === 'photo' ? ' photo' : ''}${seg.locked ? ' locked' : ''}`, tabIndex: 0, role: 'button',
+        'aria-label': `Clip ${n}, ${c.name || ''}, ${fmtTime(seg.end - seg.start)}, from ${fmtTime(seg.start)}. Alt+arrow keys move it, Delete removes it.`,
+        title: `${c.name || `Clip ${n}`} · ${fmtTime(seg.end - seg.start, true)}`,
+        style: { left: `${x(seg.start)}px`, width: `${Math.max(10, x(seg.end) - x(seg.start) - 2)}px`, backgroundImage: thumb ? `url("${thumb}")` : '' },
+      }, h('span.tl-clip-n', String(n || '?')), seg.locked ? h('span.tl-clip-lock', { title: 'Trimmed by you: locked' }, icon('lock', 10)) : null, h('span.tl-clip-d', fmtTime(seg.end - seg.start)));
+      // A diamond where the clip's move lands (on a beat, with music).
+      const why = S.edit.autoEdit?.result?.why?.[seg.id];
+      if (why?.moveAt != null && why.moveAt > seg.start && why.moveAt < seg.end) b.append(h('span.tl-clip-move', { style: { left: `${x(why.moveAt) - x(seg.start) - 5}px` }, title: why.text }));
+      const select = () => { S.selSeg = seg.id; refresh(); };
+      b.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); seek(seg.start + 0.01); select(); }
+        if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+          e.preventDefault(); e.stopPropagation();
+          const to = i + (e.key === 'ArrowLeft' ? -1 : 1);
+          if (to < 0 || to >= segs.length) return;
+          moveSegment(i, to);
+          setTimeout(() => clipsLane.children[to]?.focus(), 0);
+        }
+        if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); e.stopPropagation(); removeSegment(seg); }
+      });
+      b.addEventListener('pointerdown', (e) => {
+        if (e.button !== 0) return;
+        e.stopPropagation();
+        const startX = e.clientX;
+        let dragging = false, target = i;
+        const marker = h('div.tl-clip-drop');
+        b.setPointerCapture(e.pointerId);
+        const move = (ev) => {
+          const dx = ev.clientX - startX;
+          if (!dragging && Math.abs(dx) > 4) { dragging = true; b.classList.add('dragging'); clipsLane.append(marker); }
+          if (!dragging) return;
+          b.style.transform = `translateX(${dx}px)`;
+          const mid = (seg.start + seg.end) / 2 + dx / S.pps;
+          target = segs.filter((s, k) => k !== i && (s.start + s.end) / 2 < mid).length;
+          const others = segs.filter((s, k) => k !== i);
+          const at = target < others.length ? others[target].start : (others.length ? others[others.length - 1].end : 0);
+          marker.style.left = `${x(at) - 1}px`;
+        };
+        const up = () => {
+          b.removeEventListener('pointermove', move);
+          b.removeEventListener('pointerup', up);
+          marker.remove();
+          if (dragging) { b.style.transform = ''; b.classList.remove('dragging'); if (target !== i) moveSegment(i, target); else refresh(); return; }
+          const r = b.getBoundingClientRect(); // before select() redraws the lane
+          seek(seg.start + 0.01);
+          select();
+          // An Auto edit: the cut at this clip's start (A12).
+          if (ae?.active) ae.openCut(seg.id, { x: r.left + Math.min(r.width / 2, 40), top: r.top });
+        };
+        b.addEventListener('pointermove', move);
+        b.addEventListener('pointerup', up);
+      });
+      b.addEventListener('dblclick', () => ae?.openStrip(seg.id));
+      return b;
+    }
+
     function zoomBlock(z) {
       const b = h('div.tl-zoom', { class: z.id === S.selZoom ? 'on' : '', tabIndex: 0, role: 'button', 'aria-label': `Zoom ${z.scale.toFixed(1)}× from ${fmtTime(z.start)} to ${fmtTime(z.end)}${z.auto ? ', automatic' : ''}`, style: { left: `${x(z.start)}px`, width: `${Math.max(8, x(z.end) - x(z.start))}px` } },
         h('span.zh.l'), h('span.zlabel', `${z.scale.toFixed(1)}×`), h('span.zh.r'));
@@ -2241,10 +2750,120 @@ export async function openEditor(root, project, media, { onExit }) {
       return b;
     }
 
+    /** A stretch of the Layout track: a section (draggable, resizable) or a part that follows the whole video. */
+    function frameBlock(run) {
+      const secs = S.edit.frameSections || [];
+      const label = FRAME_LABEL[run.frame];
+      const open = framePop && (run.section ? framePop.section === run.section : !framePop.section && Math.abs(framePop.start - run.start) < 1e-3);
+      const b = h('div.tl-frame', {
+        class: `${run.frame === 'full' ? 'full' : ''}${run.section ? '' : ' base'}${(run.section && run.section === S.selFrame) || open ? ' on' : ''}`,
+        tabIndex: 0, role: 'button', 'aria-haspopup': 'dialog',
+        'aria-label': `${label} from ${fmtTime(run.start)} to ${fmtTime(run.end)}${run.section ? '' : ', whole video setting'}. Enter to change.`,
+        style: { left: `${x(run.start)}px`, width: `${Math.max(8, x(run.end) - x(run.start) - 2)}px` },
+      }, run.section ? h('span.zh.l') : null, h('span.zlabel', secs.length ? label : `${label} · whole video`), run.section ? h('span.zh.r') : null);
+      const choose = () => { framePop = { section: run.section, start: run.start, end: run.end }; S.selFrame = run.section; if (rightTabs.value() === 'style') renderRight(); refresh(); };
+      b.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); choose(); setTimeout(() => popEl.querySelector('button')?.focus(), 0); }
+        if ((e.key === 'Delete' || e.key === 'Backspace') && run.section) { e.preventDefault(); e.stopPropagation(); deleteFrameSection(run.section); }
+      });
+      b.addEventListener('pointerdown', (e) => {
+        e.stopPropagation();
+        if (!run.section) { const up = () => { b.removeEventListener('pointerup', up); seek(Math.max(run.start, Math.min(run.end - 0.05, timeAt(e.clientX)))); choose(); }; b.addEventListener('pointerup', up); return; }
+        const mode = e.target.classList.contains('l') ? 'l' : e.target.classList.contains('r') ? 'r' : 'move';
+        const startX = e.clientX, s0 = run.start, e0 = run.end;
+        let moved = false;
+        const snapshot = JSON.stringify(S.edit);
+        b.setPointerCapture(e.pointerId);
+        const move = (ev) => {
+          const dt = (ev.clientX - startX) / S.pps;
+          if (Math.abs(ev.clientX - startX) > 2) moved = true;
+          const q = (S.edit.frameSections || []).find((v) => v.id === run.section);
+          if (!q || !moved) return;
+          if (mode === 'move') { const len = e0 - s0; q.start = Math.max(0, Math.min(S.duration - len, s0 + dt)); q.end = q.start + len; }
+          if (mode === 'l') q.start = Math.max(0, Math.min(q.end - 0.3, s0 + dt));
+          if (mode === 'r') q.end = Math.min(S.duration, Math.max(q.start + 0.3, e0 + dt));
+          b.style.left = `${x(q.start)}px`; b.style.width = `${Math.max(8, x(q.end) - x(q.start) - 2)}px`;
+          S.dirty = true;
+        };
+        const up = (ev) => {
+          b.removeEventListener('pointermove', move);
+          b.removeEventListener('pointerup', up);
+          if (moved) {
+            // Trim neighbours the section now overlaps, as one undo step with the drag.
+            const q = (S.edit.frameSections || []).find((v) => v.id === run.section);
+            if (q) S.edit.frameSections = [...setFrameSection(S.edit.frameSections.filter((v) => v.id !== q.id), q.start, q.end, null), q].sort((a, c) => a.start - c.start);
+            S.undo.push(snapshot); S.redo = []; framePop = null; afterChange('none');
+          } else { seek(Math.max(run.start, Math.min(run.end - 0.05, timeAt(ev.clientX)))); choose(); }
+        };
+        b.addEventListener('pointermove', move);
+        b.addEventListener('pointerup', up);
+      });
+      return b;
+    }
+    function deleteFrameSection(id) {
+      commit((e) => { e.frameSections = (e.frameSections || []).filter((q) => q.id !== id); });
+      if (S.selFrame === id) S.selFrame = null;
+      framePop = null;
+      refresh();
+    }
+    function closeFramePop() { framePop = null; refresh(); }
+    /** The section popover (Figma frame 16): range, frame, transition, use for whole video, delete. */
+    function renderFramePop() {
+      if (!framePop || !frameLane) { popEl.hidden = true; return; }
+      const runs = frameRuns(S.edit.style, S.edit.frameSections, S.duration);
+      const run = runs.find((r) => (framePop.section ? r.section === framePop.section : !r.section && Math.abs(r.start - framePop.start) < 1e-3));
+      if (!run) { framePop = null; popEl.hidden = true; return; }
+      const sec = run.section ? (S.edit.frameSections || []).find((q) => q.id === run.section) : null;
+      const tr = transitionOf(sec);
+      const setRunFrame = (v) => {
+        let id = run.section;
+        commit((e) => {
+          const q = id && (e.frameSections || []).find((x2) => x2.id === id);
+          if (q) q.frame = v;
+          else { e.frameSections = setFrameSection(e.frameSections || [], run.start, run.end, v); id = frameSectionAt(e.frameSections, (run.start + run.end) / 2)?.id || null; }
+        });
+        framePop = { section: id, start: run.start, end: run.end };
+        S.selFrame = id;
+        if (rightTabs.value() === 'style') renderRight();
+        refresh();
+      };
+      const trValue = tr.kind === 'cut' ? 'cut' : `smooth:${tr.dur}`;
+      const trOpts = [['smooth:0.6', 'Smooth · 0.6 s'], ['smooth:0.3', 'Smooth · 0.3 s'], ['smooth:1', 'Smooth · 1 s'], ['cut', 'Cut']];
+      if (!trOpts.some(([v]) => v === trValue)) trOpts.unshift([trValue, `Smooth · ${tr.dur} s`]);
+      const trSel = h('select.tl-select', { 'aria-label': 'Transition', onchange: (ev) => {
+        const [kind, dur] = ev.target.value.split(':');
+        commit((e) => { const q = (e.frameSections || []).find((x2) => x2.id === run.section); if (q) q.transition = kind === 'cut' ? { kind: 'cut', dur: 0 } : { kind: 'smooth', dur: Number(dur) }; }, { rerender: 'none' });
+      } }, trOpts.map(([v, l]) => h('option', { value: v, selected: v === trValue }, l)));
+      fill(popEl,
+        h('div.tl-pop-head', h('b', `Section ${fmtTime(run.start)} – ${fmtTime(run.end)}`), h('button.icon-btn', { title: 'Close (Esc)', 'aria-label': 'Close', onclick: () => closeFramePop() }, icon('x', 13))),
+        segmented([['background', 'On background'], ['full', 'Full screen']], run.frame, setRunFrame, 'full-seg'),
+        sec ? h('div.tl-pop-row', h('span', 'Transition'), trSel) : h('p.muted.small', 'Follows the whole video. Pick the other frame to make this a section.'),
+        h('div.tl-pop-foot',
+          h('button.link', { onclick: () => { commit((e) => { e.style.frame = run.frame; e.frameSections = []; }); S.selFrame = null; framePop = null; if (rightTabs.value() === 'style') renderRight(); refresh(); } }, 'Use for whole video'),
+          sec ? h('button.icon-btn.danger', { title: 'Delete section', 'aria-label': 'Delete section', onclick: () => deleteFrameSection(sec.id) }, icon('trash', 14)) : null));
+      popEl.hidden = false;
+      popEl.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); closeFramePop(); } };
+      // Above the Layout lane, centred on the section, inside the timeline.
+      requestAnimationFrame(() => {
+        if (popEl.hidden) return;
+        const box = el.getBoundingClientRect(), lane = frameLane.getBoundingClientRect();
+        const cx = lane.left + x(run.start) - view.scrollLeft + (x(run.end) - x(run.start)) / 2 - box.left;
+        const w = popEl.offsetWidth || 270;
+        popEl.style.left = `${Math.max(8, Math.min(box.width - w - 8, cx - w / 2))}px`;
+        popEl.style.bottom = `${Math.max(8, box.bottom - lane.top + 6)}px`;
+      });
+    }
+    function openFrame(id) {
+      const run = frameRuns(S.edit.style, S.edit.frameSections, S.duration).find((r) => r.section === id);
+      framePop = run ? { section: id, start: run.start, end: run.end } : null;
+      refresh();
+    }
+    document.addEventListener('pointerdown', (e) => { if (!S.destroyed && framePop && !popEl.contains(e.target) && !e.target.closest?.('.tl-frame')) closeFramePop(); });
+
     // Filmstrip: ≤ 1 thumbnail per second, at most ~240, decoded once at low resolution and cached.
     const strip = { frames: [], step: 1, aspect: 16 / 9, loading: false };
     async function loadFilmstrip() {
-      if (strip.loading || !hasVideo || !webcodecsVideo()) return;
+      if (strip.loading || !hasVideo || !webcodecsVideo() || S.multi) return;
       strip.loading = true;
       let input = null;
       try {
@@ -2327,11 +2946,91 @@ export async function openEditor(root, project, media, { onExit }) {
       zoomIn.querySelector('input').value = String(m);
       setScale(m);
     }, { passive: false });
-    return { el, refresh, playhead, resize, loadFilmstrip };
+    return { el, refresh, playhead, resize, loadFilmstrip, openFrame, closeFramePop, get framePopOpen() { return !!framePop; }, addClips: () => addClipsInput.click() };
+  }
+
+  // ---- clips on the timeline (AE-01) ------------------------------------------------------------------
+  function moveSegment(from, to) {
+    const id = sequenceSegments(S.edit.segments)[from]?.id;
+    commit((e) => { Object.assign(e, reorderSegments(e, from, to)); }, { raw: true });
+    S.selSeg = id;
+    const s = sequenceSegments(S.edit.segments).find((q) => q.id === id);
+    if (s) seek(s.start + 0.01);
+    tl.refresh();
+  }
+  function removeSegment(seg) {
+    if (sequenceSegments(S.edit.segments).length < 2) { toast('A project needs at least one clip', 'info'); return; }
+    commit((e) => { e.cuts.push({ id: uid('c'), start: seg.start, end: seg.end, kind: 'manual' }); });
+    if (S.selSeg === seg.id) S.selSeg = null;
+    toast(`Removed clip ${clipNumber(seg.asset)} from the edit · ⌘Z to undo`, 'ok', 2400);
+  }
+  /** Small pictures for the Clips lane, one per clip. */
+  async function loadClipThumbs() {
+    for (const c of clipList) {
+      if (S.clipThumbs[c.id] || !S.clipBlobs[c.id] || S.destroyed) continue;
+      try {
+        if (c.kind === 'photo') {
+          const bmp = await createImageBitmap(S.clipBlobs[c.id]);
+          const cv2 = Object.assign(document.createElement('canvas'), { width: 120, height: Math.max(1, Math.round((120 * bmp.height) / Math.max(1, bmp.width))) });
+          cv2.getContext('2d').drawImage(bmp, 0, 0, cv2.width, cv2.height);
+          S.clipThumbs[c.id] = cv2.toDataURL('image/jpeg', 0.7);
+        } else if (c.hasVideo) S.clipThumbs[c.id] = await thumbnail(S.clipBlobs[c.id], Math.min(1, (c.duration || 0) / 3), 120);
+      } catch { /* decoration only */ }
+      tl.refresh();
+    }
+  }
+  /** Add files as clips at the end of the sequence. */
+  async function addClips(files) {
+    if (!files.length) return;
+    toast(`Adding ${files.length} clip${files.length > 1 ? 's' : ''}…`, 'info', 2500);
+    const added = [];
+    try {
+      for (const file of files) {
+        let n = clipList.length + added.length + 1;
+        while (clipList.some((c) => c.id === `c${n}`) || added.some((a) => a.c.id === `c${n}`)) n++;
+        const id = `c${n}`;
+        let c;
+        if (/^image\//.test(file.type || '')) {
+          const bmp = await createImageBitmap(file);
+          c = { id, kind: 'photo', name: file.name, type: file.type, width: bmp.width, height: bmp.height, hasAudio: false, hasVideo: true };
+          S.clipEls[id] = bmp;
+        } else {
+          const info = await probe(file);
+          if (!info.duration || (info.hasVideo && !info.canDecodeVideo && !info.canPlayElement)) throw new Error(`This browser can’t play ${file.name}.`);
+          c = { id, kind: info.hasVideo ? 'video' : 'audio', name: file.name, type: file.type || '', duration: info.duration, width: info.width, height: info.height, hasAudio: info.hasAudio, hasVideo: info.hasVideo, audioChannels: info.audioChannels || 0 };
+          const el = h('video', { src: URL.createObjectURL(file), preload: 'auto', playsInline: true });
+          el.addEventListener('loadeddata', () => { S.dirty = true; });
+          el.addEventListener('seeked', () => { S.dirty = true; });
+          mediaBox.append(el);
+          S.clipEls[id] = el;
+        }
+        await putMedia(`${project.id}:clip-${id}`, file);
+        S.clipBlobs[id] = file;
+        added.push({ c, len: c.kind === 'photo' ? 3 : c.duration });
+      }
+    } catch (err) {
+      toast(`Couldn’t add that file: ${err.message}`, 'error', 6000);
+    }
+    if (!added.length) return;
+    clipList.push(...added.map((a) => a.c));
+    project.media.clips = clipList;
+    project.media.hasAudio = S.hasAudio = clipList.some((c) => c.hasAudio);
+    commit((e) => {
+      let t = sequenceDuration(e.segments);
+      for (const { c, len } of added) {
+        let k = e.segments.length + 1;
+        while (e.segments.some((s) => s.id === `s${k}`)) k++;
+        e.segments.push({ id: `s${k}`, asset: c.id, sourceIn: 0, start: Math.round(t * 1e6) / 1e6, end: Math.round((t + len) * 1e6) / 1e6 });
+        t += len;
+      }
+    }, { raw: true });
+    toast(`Added ${added.length} clip${added.length > 1 ? 's' : ''} at the end`, 'ok');
+    loadClipThumbs();
+    if (S.hasAudio) loadClipAudio().then(() => { tl.refresh(); S.dirty = true; }).catch(() => {});
   }
 
   function restoreCut(c) {
-    const words = S.edit.words;
+    const words = S.words;
     commit((ed) => {
       ed.cuts = ed.cuts.filter((x) => !(x.start < c.end && x.end > c.start));
       ed.words.forEach((w) => { if (w.deleted && w.start < c.end && w.end > c.start) w.deleted = false; });
@@ -2367,9 +3066,14 @@ export async function openEditor(root, project, media, { onExit }) {
   }
 
   // ---- export ----------------------------------------------------------------------------------
+  /** Multi-clip projects (AE-01): the clips the exporters play through the segments, and the words for ducking. */
+  function sequenceCtx() {
+    if (!S.multi) return {};
+    return { clips: clipList.filter((c) => S.clipBlobs[c.id]).map((c) => ({ id: c.id, kind: c.kind, blob: S.clipBlobs[c.id], hasAudio: !!c.hasAudio, duration: c.duration })), speechWords: S.words };
+  }
   async function openExport() {
     pause();
-    const opts = { format: 'mp4', res: 1080, fps: 30, quality: 'high', captions: S.edit.captions.enabled && S.edit.words.length > 0 };
+    const opts = { format: 'mp4', res: 1080, fps: 30, quality: 'high', captions: S.edit.captions.enabled && S.words.length > 0 };
     const bump = bumpersFor(S.edit);
     const outDur = totalDuration(S.kept) + (bump.intro ? S.edit.brand.intro.duration : 0) + (bump.outro ? S.edit.brand.outro.duration : 0);
     const info = h('p.muted.small');
@@ -2400,6 +3104,7 @@ export async function openEditor(root, project, media, { onExit }) {
       go.disabled = true;
       fill(engineRow, h('p.muted.small', 'Checking the desktop engine…'));
     }
+    // Multi-clip projects too (AE-10): the engine's render-plan plays sources.clips through the segments.
     if (desktop.available) {
       desktop.info().then((i) => {
         if (!i?.engine?.available) {
@@ -2426,7 +3131,7 @@ export async function openEditor(root, project, media, { onExit }) {
       toggle('Burn in captions', opts.captions, (v) => { opts.captions = v; }),
       engineRow,
       info, go,
-      h('div.nle-row', h('span.muted.small', 'Finish in another editor:'), h('button.btn.small', { onclick: () => downloadNLE('fcpxml') }, 'Final Cut (FCPXML)'), h('button.btn.small', { onclick: () => downloadNLE('xmeml') }, 'Premiere / Resolve (XML)'), h('button.btn.small', { onclick: () => downloadNLE('edl') }, 'EDL')),
+      S.multi ? null : h('div.nle-row', h('span.muted.small', 'Finish in another editor:'), h('button.btn.small', { onclick: () => downloadNLE('fcpxml') }, 'Final Cut (FCPXML)'), h('button.btn.small', { onclick: () => downloadNLE('xmeml') }, 'Premiere / Resolve (XML)'), h('button.btn.small', { onclick: () => downloadNLE('edl') }, 'EDL')),
       h('p.muted.small', icon('lock', 12), webcodecsVideo() ? 'Rendered on this device with WebCodecs. Nothing is uploaded.' : 'Rendered on this device in real time. Nothing is uploaded.'));
     body.append(form);
     updateInfo();
@@ -2443,7 +3148,7 @@ export async function openEditor(root, project, media, { onExit }) {
       const label = h('p.muted.small', 'Preparing…');
       body.replaceChildren(h('div.stack', h('h3', 'Rendering…'), bar, label, h('button.btn', { onclick: () => ctrl.abort() }, 'Cancel')));
       try {
-        const res = await exportVideo({ edit: S.edit, kept: S.kept, cues: S.cues, screenBlob: S.screenBlob, cameraBlob: S.camBlob, cameraOffset: S.camOffset, cameras: camerasForExport(), hasAudio: S.hasAudio, overlays: { logo: S.logoBmp }, audioContext, brollMedia: S.brollMedia, audioGainDb: await loudnessGainFor(S.edit, S.kept), musicBlob: S.edit.music ? S.musicBlob : null, ...bumpersFor(S.edit) }, { width, height, fps: opts.fps, format: opts.format, quality: opts.quality, captions: opts.captions }, {
+        const res = await exportVideo({ edit: S.edit, kept: S.kept, cues: S.cues, cursor: S.cursor, ...sequenceCtx(), screenBlob: S.screenBlob, cameraBlob: S.camBlob, cameraOffset: S.camOffset, cameras: camerasForExport(), hasAudio: S.hasAudio, overlays: { logo: S.logoBmp }, audioContext, brollMedia: S.brollMedia, audioGainDb: await loudnessGainFor(S.edit, S.kept), musicBlob: S.edit.music ? S.musicBlob : null, ...bumpersFor(S.edit) }, { width, height, fps: opts.fps, format: opts.format, quality: opts.quality, captions: opts.captions }, {
           signal: ctrl.signal,
           onProgress: (p) => { bar.firstChild.style.width = `${Math.round(p.done * 100)}%`; label.textContent = `${Math.round(p.done * 100)}% · frame ${p.frame} of ${p.total}${p.eta != null ? ` · about ${Math.ceil(p.eta)}s left` : ''}`; },
         });
@@ -2460,7 +3165,7 @@ export async function openEditor(root, project, media, { onExit }) {
             folderButton(res.blob, name),
             shareButton(res.blob, name),
             h('button.btn', { title: 'Send directly to another device running Slipstream', onclick: () => sendToDeviceDialog(res.blob, name) }, icon('download', 15), 'Send to a device'),
-            S.edit.words.length ? h('button.btn', { onclick: () => downloadSubs('srt') }, icon('captions', 15), 'Captions .srt') : null)));
+            S.words.length ? h('button.btn', { onclick: () => downloadSubs('srt') }, icon('captions', 15), 'Captions .srt') : null)));
         toast('Export finished', 'ok');
       } catch (err) {
         if (err.name === 'AbortError') { m.close(); toast('Export cancelled'); return; }
@@ -2501,9 +3206,23 @@ export async function openEditor(root, project, media, { onExit }) {
           if (orig) a.path = await stage(orig, `angle-${a.id}-original`);
           else if (ang?.blob) a.path = await stage(ang.blob, `angle-${a.id}`);
         }
-        const original = await originalOf('original', project.media.original, 'recording');
+        // Multi-clip projects (AE-01): every clip (video or photo) as a file, keyed by its id in sources.clips. The
+        // engine plays them through the segments; sources.screen is the first clip, so it reuses that copy.
+        let firstClip = null;
+        if (S.multi) {
+          const list = plan.sources?.clips || [];
+          for (const [k, c] of list.entries()) {
+            label.textContent = `Handing clip ${k + 1} of ${list.length} to the engine…`;
+            const rec = clipList.find((x) => x.id === c.id);
+            const blob = S.clipBlobs[c.id] || (await getMedia(`${project.id}:clip-${c.id}`, rec?.type || c.type || ''));
+            if (!blob) throw new Error(`the clip “${rec?.name || c.name || c.id}” is missing from this project`);
+            c.path = await stage(blob, `clip-${c.id}`);
+            firstClip ??= c.path;
+          }
+        }
+        const original = S.multi ? null : await originalOf('original', project.media.original, 'recording');
         const camOriginal = S.camBlob ? await originalOf('camera-original', project.media.cameraOriginal, 'camera recording') : null;
-        const screenMedia = original ? namedMedia(original, 'original') : namedMedia(S.screenBlob, 'screen');
+        const screenMedia = firstClip || (original ? namedMedia(original, 'original') : namedMedia(S.screenBlob, 'screen'));
         const camMedia = camOriginal ? namedMedia(camOriginal, 'camera-original') : namedMedia(S.camBlob, 'camera');
         const res = await desktop.render(plan, { name, width, height, fps: opts.fps, format: opts.format, quality: opts.quality, captions: opts.captions, media: { screen: screenMedia, camera: camMedia }, projectId: project.id, signal: ctrl.signal }, (p) => {
           if (p?.done == null) return;
@@ -2516,7 +3235,7 @@ export async function openEditor(root, project, media, { onExit }) {
           h('video.export-preview', { src: res.url, controls: true, playsInline: true }),
           h('p.muted.small', `${file} · ${fmtBytes(res.size || 0)}${res.engine?.encoder ? ` · ${res.engine.encoder}` : ''}`),
           h('div.row', h('button.btn.primary', { onclick: () => desktop.revealInFolder(res.path).catch(() => {}) }, icon('file', 15), 'Show in folder'),
-            S.edit.words.length ? h('button.btn', { onclick: () => downloadSubs('srt') }, icon('captions', 15), 'Captions .srt') : null)));
+            S.words.length ? h('button.btn', { onclick: () => downloadSubs('srt') }, icon('captions', 15), 'Captions .srt') : null)));
         toast('Export finished', 'ok');
       } catch (err) {
         if (err.name === 'AbortError') { m.close(); toast('Export cancelled'); return; }
@@ -2613,8 +3332,9 @@ export async function openEditor(root, project, media, { onExit }) {
         break;
       case 'z': case 'Z': if (S.sel) zoomSelection(); else if (S.wsel) zoomOnSelection(); else { const z = newZoom(S.t); commit((ed) => { ed.zooms.push(z); }); S.selZoom = z.id; rightTabs.select('zoom'); setFocusPick(true); } break;
       case 'c': case 'C': if (S.sel) clipSelection(); else if (S.wsel) clipFromSelection(); break;
+      case 'l': case 'L': if (!mod) addFrameSection(); break;
       case 'e': case 'E': openExport(); break;
-      case 'Escape': S.sel = null; S.wsel = null; setFocusPick(false); if (S.drawTool) setDrawTool(null); selBar.hidden = true; renderTranscriptState(); tl.refresh(); break;
+      case 'Escape': if (ae && !ae.pop.hidden) { ae.closeCut(); break; } if (S.cropEdit) { setCropEdit(false); break; } if (tl.framePopOpen) { tl.closeFramePop(); break; } S.sel = null; S.wsel = null; setFocusPick(false); if (S.drawTool) setDrawTool(null); selBar.hidden = true; renderTranscriptState(); tl.refresh(); break;
       case '?': showShortcuts(); break;
       default:
     }
@@ -2622,7 +3342,7 @@ export async function openEditor(root, project, media, { onExit }) {
   document.addEventListener('keydown', onKey);
 
   function showShortcuts() {
-    const rows = [['Space', 'Play / pause'], ['← / →', 'Back / forward 1s (⇧ for 5s)'], [', / .', 'Step one frame'], ['Delete', 'Cut selected words or timeline range'], ['Z', 'Zoom on selection or at playhead'], ['C', 'Set clip range from selection'], ['⌘Z / ⇧⌘Z', 'Undo / redo'], ['⌘F', 'Find in transcript'], ['Double-click word', 'Fix a transcription typo'], ['E', 'Export'], ['Esc', 'Clear selection']];
+    const rows = [['Space', 'Play / pause'], ['← / →', 'Back / forward 1s (⇧ for 5s)'], [', / .', 'Step one frame'], ['Delete', 'Cut selected words or timeline range'], ['Z', 'Zoom on selection or at playhead'], ['C', 'Set clip range from selection'], ['L', 'Full screen or background section at the playhead'], ['⌘Z / ⇧⌘Z', 'Undo / redo'], ['⌘F', 'Find in transcript'], ['Double-click word', 'Fix a transcription typo'], ['E', 'Export'], ['Esc', 'Clear selection']];
     modal('Keyboard shortcuts', h('dl.shortcuts', rows.map(([k, v]) => [h('dt', h('kbd', k)), h('dd', v)])));
   }
 
@@ -2636,6 +3356,7 @@ export async function openEditor(root, project, media, { onExit }) {
     saveNow().finally(() => {
       URL.revokeObjectURL(screenURL);
       if (camURL) URL.revokeObjectURL(camURL);
+      for (const el of Object.values(S.clipEls)) if (el instanceof HTMLVideoElement && el !== screenEl) URL.revokeObjectURL(el.src);
       if (S.musicEl) URL.revokeObjectURL(S.musicEl.src);
       onExit?.();
     });
@@ -2659,9 +3380,14 @@ export async function openEditor(root, project, media, { onExit }) {
   if (project.media.intro || project.media.outro) loadBumpers();
   if ((project.media.angles || []).length > 1) loadAngles();
   setTimeout(() => tl.loadFilmstrip(), project.autoPolish ? 4000 : 300);
-  if (project.autoPolish && !S.edit.words.length) autoPolish();
+  if (S.multi) loadClipThumbs();
+  ae?.refresh();
+  // Motion for reframing (AE-06) and the Motion lane, after the first-open work has settled.
+  if (ae) setTimeout(() => { if (!S.destroyed) ae.prefetchMotion(); }, project.autoPolish ? 8000 : 1500);
+  if (project.autoPolish && !S.words.length) autoPolish();
+  else if (S.multi && S.hasAudio) loadClipAudio().then(() => { tl.refresh(); S.dirty = true; }).catch(() => {});
   else if (!S.peaks && S.hasAudio) {
-    analyzeAudio(S.screenBlob, S.duration).then((r) => { S.peaks = r.peaks; S.pcm = r.pcm; tl.refresh(); save(); }).catch(() => {});
+    analyzeProjectAudio().then((r) => { S.peaks = r.peaks; S.pcm = r.pcm; tl.refresh(); save(); }).catch(() => {});
   }
   S.offWall = offWall;
   return { exit };

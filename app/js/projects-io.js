@@ -2,7 +2,7 @@
 // file (edit plan v2 + media + thumbnail) and open one made by any Slipstream surface. Everything happens
 // on this device: the bundle is built from local files and downloaded, never uploaded.
 import { packBundle, unpackBundle, packBrand, unpackBrand, BundleError, BUNDLE_EXT, BRAND_EXT } from '../../packages/editor-core/src/bundle.js';
-import { toV2, fromV2, migratePlan, validatePlan } from '../../packages/editor-core/src/plan.js';
+import { toV2, fromV2, migratePlan, validatePlan, isMultiClip } from '../../packages/editor-core/src/plan.js';
 import { sha256Blob } from '../../packages/editor-core/src/sha256.js';
 import { getMedia } from './store.js';
 
@@ -27,6 +27,7 @@ async function dataUrlToBlob(url) {
 
 /** Build a `.slipstream` bundle for a stored project. planOnly keeps media as references (small file). */
 export async function exportBundle(project, { planOnly = false, onProgress } = {}) {
+  if (project.media?.clips?.length) return exportClipsBundle(project, { planOnly, onProgress });
   // Recordings edited from a preview copy (desktop app) travel as their originals, never the 1280-wide copy.
   const m = project.media;
   const screenRef = m.original ? { key: 'original', type: m.original.type, name: m.original.name } : { key: 'screen', type: m.screenType, name: m.screenName };
@@ -36,12 +37,9 @@ export async function exportBundle(project, { planOnly = false, onProgress } = {
     m.camera ? getMedia(`${project.id}:${cameraRef.key}`, cameraRef.type) : null,
   ]);
   if (!screen) throw new Error('The media for this project is missing from this browser.');
-  // Stored media is named 'screen'/'camera' internally; bundles and plan-only refs use the original file name.
-  const named = (blob, name, type) => (blob && name && blob.name !== name ? new File([blob], name, { type: type || blob.type }) : blob);
   const plan = planFor(project);
   const check = validatePlan(plan);
   if (!check.valid) console.warn('Plan does not match the v2 schema', check.errors.slice(0, 5));
-  // Extra assets: camera angles (S-03), B-roll (S-04) and the brand logo (S-02).
   const assets = [];
   if (!planOnly) {
     for (const a of project.media.angles || []) {
@@ -51,29 +49,65 @@ export async function exportBundle(project, { planOnly = false, onProgress } = {
         : await getMedia(`${project.id}:angle-${a.id}`, a.type || '');
       if (blob) assets.push({ key: `angle-${a.id}`, blob, name: a.original?.name || a.name });
     }
-    for (const b of project.edit.broll || []) {
-      const blob = await getMedia(`${project.id}:broll-${b.id}`, b.type || '');
-      if (blob) assets.push({ key: `broll-${b.id}`, blob });
-    }
-    for (const k of ['intro', 'outro']) {
-      if (!project.media[k]) continue;
-      const blob = await getMedia(`${project.id}:${k}`, project.media[`${k}Type`] || '');
-      if (blob) assets.push({ key: k, blob });
-    }
-    if (project.media.logo) {
-      const blob = await getMedia(`${project.id}:logo`, project.media.logoType || '');
-      if (blob) assets.push({ key: 'logo', blob });
-    }
-    // Background music (S-04).
-    if (project.edit.music) {
-      const blob = await getMedia(`${project.id}:music`, project.edit.music.type || '');
-      if (blob) assets.push({ key: 'music', blob });
-    }
+    assets.push(...await projectAssets(project));
   }
   return packBundle({
     plan,
     media: { screen: named(screen, screenRef.name, screenRef.type), camera: named(camera, cameraRef.name, cameraRef.type) },
     assets,
+    thumb: await dataUrlToBlob(project.thumb),
+    app: APP_INFO,
+    planOnly,
+    onProgress,
+  });
+}
+
+// Stored media is named 'screen'/'camera'/'clip-<id>' internally; bundles and plan-only refs use the original file name.
+const named = (blob, name, type) => (blob && name && blob.name !== name ? new File([blob], name, { type: type || blob.type }) : blob);
+
+/** B-roll (S-04), intro/outro and logo (S-02) and the music bed: media/assets/<key>.<ext> in a bundle. */
+async function projectAssets(project) {
+  const assets = [];
+  for (const b of project.edit.broll || []) {
+    const blob = await getMedia(`${project.id}:broll-${b.id}`, b.type || '');
+    if (blob) assets.push({ key: `broll-${b.id}`, blob });
+  }
+  for (const k of ['intro', 'outro']) {
+    if (!project.media[k]) continue;
+    const blob = await getMedia(`${project.id}:${k}`, project.media[`${k}Type`] || '');
+    if (blob) assets.push({ key: k, blob });
+  }
+  if (project.media.logo) {
+    const blob = await getMedia(`${project.id}:logo`, project.media.logoType || '');
+    if (blob) assets.push({ key: 'logo', blob });
+  }
+  // Background music (S-04).
+  if (project.edit.music) {
+    const blob = await getMedia(`${project.id}:music`, project.edit.music.type || '');
+    if (blob) assets.push({ key: 'music', blob });
+  }
+  return assets;
+}
+
+/**
+ * A multi-clip project (AE-01) as a bundle: every clip as media/clips/<id>.<ext>, the first one doubling as the
+ * screen. Plan-only bundles reference the clips by name, size and hash.
+ */
+async function exportClipsBundle(project, { planOnly = false, onProgress } = {}) {
+  const plan = planFor(project);
+  const check = validatePlan(plan);
+  if (!check.valid) console.warn('Plan does not match the v2 schema', check.errors.slice(0, 5));
+  const clips = [];
+  for (const c of project.media.clips) {
+    const blob = await getMedia(`${project.id}:clip-${c.id}`, c.type || '');
+    if (!blob) throw new Error(`The clip ${c.name || c.id} is missing from this browser.`);
+    clips.push(planOnly ? { id: c.id, blob, name: c.name, type: c.type } : { id: c.id, blob: named(blob, c.name, c.type), name: c.name, type: c.type });
+  }
+  return packBundle({
+    plan,
+    media: {},
+    clips,
+    assets: planOnly ? [] : await projectAssets(project),
     thumb: await dataUrlToBlob(project.thumb),
     app: APP_INFO,
     planOnly,
@@ -94,6 +128,9 @@ export async function readBundle(file, { verify = true, onProgress } = {}) {
     edit,
     plan,
     media: res.media,
+    // Multi-clip projects (AE-01): the clips in plan order, and their files.
+    clipList: isMultiClip(plan.segments, plan.sources?.clips) ? (media.clips || []) : [],
+    clips: res.clips || {},
     assets: res.assets || {},
     angles: media?.angles || null,
     cameraOffset: media?.cameraOffset ?? plan.sources?.cameraOffset ?? 0,

@@ -5,7 +5,8 @@ import { renderFrame, usesCamera } from './compositor.js';
 import { layoutAt } from '../../packages/editor-core/src/scenes.js';
 import { loadWallpaper } from './wallpapers.js';
 import { ensureCaptionFonts } from './captions.js';
-import { outToSrc, totalDuration } from './edl.js';
+import { outToSrc, totalDuration, sequenceTime, segmentSpeed, sequenceAudioPieces } from './edl.js';
+import { timeStretch } from '../../packages/editor-core/src/timestretch.js';
 import { webcodecsVideo } from './media-compat.js';
 import { exportRealtime, realtimeMime, primeExportAudio } from './exporter-realtime.js';
 import desktop from './desktop-bridge.js';
@@ -25,8 +26,10 @@ export async function pickCodecs(format, width, height) {
 /**
  * opts = { width, height, fps, format: 'mp4'|'webm', quality: 'high'|'medium', captions: bool }
  * ctx  = { edit, kept, cues, screenBlob, cameraBlob, cameraOffset, cameras?, hasAudio, overlays?, brollMedia?: { [itemId]: Blob },
- *          audioGainDb?, intro?: Blob, outro?: Blob, musicBlob?: Blob }  (intro/outro: brand bumper clips, S-02;
- *          musicBlob: the edit.music bed, S-04)
+ *          audioGainDb?, intro?: Blob, outro?: Blob, musicBlob?: Blob, clips?, speechWords? }  (intro/outro: brand bumper
+ *          clips, S-02; musicBlob: the edit.music bed, S-04; clips: [{ id, kind, blob, hasAudio }] of a multi-clip
+ *          project, AE-01, whose edit.segments then say what plays: kept is on the output timeline and screenBlob is
+ *          ignored; speechWords: words on that timeline, for ducking the music)
  */
 export async function exportVideo(ctx, opts, { onProgress = () => {}, signal } = {}) {
   // Decode the wallpaper and caption faces up front so frame 1 matches the preview.
@@ -38,11 +41,13 @@ export async function exportVideo(ctx, opts, { onProgress = () => {}, signal } =
   // No WebCodecs encoder for this format: record the compositor in real time instead (W-06).
   if (!codecs.video) return exportRealtime(ctx, opts, { onProgress, signal });
 
-  const screenInput = new MB.Input({ source: new MB.BlobSource(ctx.screenBlob), formats: MB.ALL_FORMATS });
+  // Multi-clip projects (AE-01) decode their clips through the segments instead of one screen recording.
+  const multi = Array.isArray(ctx.clips) && ctx.clips.length > 0;
+  const screenInput = multi ? null : new MB.Input({ source: new MB.BlobSource(ctx.screenBlob), formats: MB.ALL_FORMATS });
   // Camera angles (S-03): the primary camera plus any extra angles the edit actually shows.
-  const angles = camerasFor(ctx);
-  const sTrack = await screenInput.getPrimaryVideoTrack();
-  const aTrack = ctx.hasAudio ? await screenInput.getPrimaryAudioTrack() : null;
+  const angles = multi ? [] : camerasFor(ctx);
+  const sTrack = multi ? null : await screenInput.getPrimaryVideoTrack();
+  const aTrack = !multi && ctx.hasAudio ? await screenInput.getPrimaryAudioTrack() : null;
   const sStart = sTrack ? await sTrack.getFirstTimestamp() : 0;
   for (const a of angles) {
     a.input = new MB.Input({ source: new MB.BlobSource(a.blob), formats: MB.ALL_FORMATS });
@@ -58,7 +63,7 @@ export async function exportVideo(ctx, opts, { onProgress = () => {}, signal } =
   const videoSource = new MB.CanvasSource(canvas, { codec: codecs.video, bitrate: quality, keyFrameInterval: 2, latencyMode: 'quality' });
   output.addVideoTrack(videoSource, { frameRate: fps });
   let audioSource = null;
-  const speechOk = !!(aTrack && codecs.audio && (await aTrack.canDecode()));
+  const speechOk = multi ? !!(codecs.audio && ctx.clips.some((c) => c.hasAudio && c.blob)) : !!(aTrack && codecs.audio && (await aTrack.canDecode()));
   const wantsMusic = !!(ctx.musicBlob && ctx.edit.music && codecs.audio);
   if (speechOk || wantsMusic) {
     audioSource = new MB.AudioBufferSource({ codec: codecs.audio, bitrate: quality });
@@ -72,15 +77,16 @@ export async function exportVideo(ctx, opts, { onProgress = () => {}, signal } =
 
   const sSink = sTrack ? new MB.CanvasSink(sTrack, { poolSize: 3 }) : null;
   const sIter = sSink ? sSink.canvasesAtTimestamps(srcTimes.map((t) => sStart + t)) : null;
+  const seq = multi ? await openSequence(ctx, srcTimes) : null;
   for (const a of angles) {
     if (!a.track) continue;
     const sink = new MB.CanvasSink(a.track, { width: Math.min(1280, a.track.displayWidth), poolSize: 3 });
     a.iter = sink.canvasesAtTimestamps(srcTimes.map((t) => a.start + Math.max(0, t - (a.offset || 0))));
   }
   const primaryAngle = angles[0]?.id;
-  const audioFormat = speechOk ? { sampleRate: aTrack.sampleRate, channels: aTrack.numberOfChannels } : audioSource ? { sampleRate: 48000, channels: 2 } : null;
+  const audioFormat = speechOk && !multi ? { sampleRate: aTrack.sampleRate, channels: aTrack.numberOfChannels } : audioSource ? { sampleRate: 48000, channels: 2 } : null;
   const music = wantsMusic ? await openMusic(ctx, audioFormat) : null;
-  const speechGen = speechOk ? audioChunks(aTrack, ctx.kept, ctx.audioGainDb || 0) : audioSource ? silentChunks(outDur, audioFormat) : null;
+  const speechGen = speechOk ? (multi ? sequenceAudioChunks(ctx, audioFormat, ctx.audioGainDb || 0) : audioChunks(aTrack, ctx.kept, ctx.audioGainDb || 0)) : audioSource ? silentChunks(outDur, audioFormat) : null;
   const audioGen = speechGen && music ? withMusic(speechGen, music) : speechGen;
   const intro = ctx.intro ? await openBumper(ctx.intro) : null;
   const outro = ctx.outro ? await openBumper(ctx.outro) : null;
@@ -122,6 +128,7 @@ export async function exportVideo(ctx, opts, { onProgress = () => {}, signal } =
         await audioSource.add(next.value);
         audioOut += next.value.duration;
       }
+      if (seq) lastScreen = (await seq.frame(i)) || lastScreen;
       const s = sIter ? (await sIter.next()).value : null;
       if (s) lastScreen = s.canvas;
       for (const a of angles) { if (!a.iter) continue; const c = (await a.iter.next()).value; if (c) a.last = c.canvas; }
@@ -129,7 +136,7 @@ export async function exportVideo(ctx, opts, { onProgress = () => {}, signal } =
       const active = angles.find((a) => a.id === want) || angles[0];
       const lastCam = active && srcTimes[i] >= (active.offset || 0) ? active.last : null;
       const overlays = broll.active ? { ...ctx.overlays, broll: await broll.frame(srcTimes[i]) } : ctx.overlays;
-      renderFrame(g, W, H, { screen: lastScreen, camera: lastCam, edit: opts.captions ? ctx.edit : { ...ctx.edit, captions: { ...ctx.edit.captions, enabled: false } }, t: srcTimes[i], cues: ctx.cues, overlays });
+      renderFrame(g, W, H, { screen: lastScreen, camera: lastCam, edit: opts.captions ? ctx.edit : { ...ctx.edit, captions: { ...ctx.edit.captions, enabled: false } }, t: srcTimes[i], cues: ctx.cues, overlays, cursor: ctx.cursor });
       await videoSource.add(base + T, 1 / fps);
       framesDone++;
       if (i % 5 === 0) {
@@ -150,14 +157,133 @@ export async function exportVideo(ctx, opts, { onProgress = () => {}, signal } =
     throw err;
   } finally {
     sIter?.return?.();
+    seq?.dispose();
     for (const a of angles) { a.iter?.return?.(); a.input?.dispose?.(); }
-    screenInput.dispose?.();
+    screenInput?.dispose?.();
     broll.dispose();
     intro?.input.dispose?.(); outro?.input.dispose?.();
   }
   onProgress({ done: 1, eta: 0, frame: grandTotal, total: grandTotal });
   const mime = opts.format === 'webm' ? 'video/webm' : 'video/mp4';
   return { blob: new Blob([output.target.buffer], { type: mime }), codecs };
+}
+
+// ---- multi-clip projects (AE-01) ----------------------------------------------------------------
+/**
+ * Frames of a segment sequence for the output times `times` (timeline seconds, one per output frame, in order):
+ * each run of frames inside one segment is read from that clip with one sink iterator. frame(i) resolves to a
+ * canvas (video) or ImageBitmap (photo), or null in a gap.
+ */
+async function openSequence(ctx, times) {
+  const clips = new Map();
+  for (const c of ctx.clips) {
+    if (!c.blob) continue;
+    if (c.kind === 'photo') { clips.set(c.id, { bmp: await createImageBitmap(c.blob).catch(() => null) }); continue; }
+    if (c.kind === 'audio') continue;
+    const input = new MB.Input({ source: new MB.BlobSource(c.blob), formats: MB.ALL_FORMATS });
+    const track = await input.getPrimaryVideoTrack();
+    if (!track || !(await track.canDecode())) { input.dispose?.(); continue; }
+    clips.set(c.id, { input, sink: new MB.CanvasSink(track, { poolSize: 3 }), first: await track.getFirstTimestamp() });
+  }
+  const plan = times.map((t) => sequenceTime(ctx.edit.segments, t));
+  let run = null; // { start, end, iter } over frame indices [start, end)
+  return {
+    async frame(i) {
+      const a = plan[i];
+      const c = a && clips.get(a.asset);
+      if (!c) return null;
+      if (c.bmp) return c.bmp;
+      if (!run || i < run.start || i >= run.end) {
+        run?.iter.return?.();
+        let end = i + 1;
+        while (end < plan.length && plan[end]?.segment.id === a.segment.id) end++;
+        run = { start: i, end, iter: c.sink.canvasesAtTimestamps(plan.slice(i, end).map((p) => c.first + p.local)) };
+      }
+      const wr = (await run.iter.next()).value;
+      return wr ? wr.canvas : null;
+    },
+    dispose() { run?.iter.return?.(); for (const c of clips.values()) { c.input?.dispose?.(); c.bmp?.close?.(); } },
+  };
+}
+
+/**
+ * Sound of a segment sequence over the kept ranges (timeline seconds), as about 1 s AudioBuffers at the export's
+ * rate: each clip is decoded once (Web Audio resamples it), each piece plays where it sits on the output (a gap
+ * between segments is silence), at its segment's speed with the pitch kept (WSOLA, like the Mac app and the engine),
+ * with 80 ms crossfades at the cuts; clips without sound and photos are silent.
+ */
+async function* sequenceAudioChunks(ctx, { sampleRate, channels }, gainDb = 0) {
+  // An Auto edit to music with "Keep clip sound" off plays the music alone (AE-09).
+  const muted = !!(ctx.edit.autoEdit && ctx.edit.music && ctx.edit.autoEdit.keepClipSound === false);
+  const gain = muted ? 0 : Math.pow(10, gainDb / 20);
+  const decoded = new Map();
+  if (!muted) {
+    const ac = new OfflineAudioContext(Math.max(1, channels), 1, sampleRate);
+    for (const c of ctx.clips) {
+      if (!c.hasAudio || !c.blob || c.kind === 'photo') continue;
+      try { decoded.set(c.id, await ac.decodeAudioData(await c.blob.arrayBuffer())); } catch { /* no decodable sound: silent */ }
+    }
+  }
+  // 80 ms crossfades at every cut (AE-09): each side plays 40 ms past the cut into its own footage while the other
+  // fades in, so a word that ends right at a cut isn't clipped and no join clicks. The ends and gaps get 6 ms.
+  const pieces = sequenceAudioPieces(ctx.kept, ctx.edit.segments, { crossfade: 0.04 });
+  const HARD = 0.006;
+  const out = totalDuration(ctx.kept);
+  const total = Math.round(out * sampleRate);
+  const CH = 1024 * Math.max(1, Math.round(sampleRate / 1024)); // about 1 s, in whole AAC frames
+  let first = 0;
+  for (let i0 = 0; i0 < total; i0 += CH) {
+    const n = Math.min(CH, total - i0);
+    const buf = new AudioBuffer({ length: n, numberOfChannels: channels, sampleRate });
+    const outCh = Array.from({ length: channels }, (_, c) => buf.getChannelData(c));
+    const u0 = i0 / sampleRate, u1 = (i0 + n) / sampleRate;
+    while (first < pieces.length && pieces[first].o1 + pieces[first].xout < u0) { pieces[first].pcm = null; first++; }
+    for (let k = first; k < pieces.length && pieces[k].o0 - pieces[k].xin < u1; k++) {
+      const p = pieces[k];
+      const src = decoded.get(p.s.asset);
+      if (!src || gain === 0) continue;
+      p.pcm ??= piecePCM(p, src, sampleRate, channels);
+      const { data, P0 } = p.pcm;
+      const j0 = Math.max(i0, P0), j1 = Math.min(i0 + n, P0 + data[0].length);
+      for (let j = j0; j < j1; j++) {
+        const u = j / sampleRate;
+        const ein = p.xin > 0 ? (u - (p.o0 - p.xin)) / (2 * p.xin) : (u - p.o0) / HARD;
+        const eout = p.xout > 0 ? (p.o1 + p.xout - u) / (2 * p.xout) : (p.o1 - u) / HARD;
+        const env = Math.min(1, ein, eout);
+        if (env <= 0) continue;
+        for (let c = 0; c < channels; c++) outCh[c][j - i0] += data[c][j - P0] * env * gain;
+      }
+    }
+    for (const d of outCh) for (let j = 0; j < n; j++) d[j] = Math.max(-1, Math.min(1, d[j]));
+    yield buf;
+  }
+}
+
+/**
+ * One piece's sound from output sample P0 (its crossfade lead-in) to its lead-out, `channels` wide. The clip slice is
+ * read at the clip's rate (zeros outside it); a segment at a speed other than 1 is time-stretched with the pitch kept.
+ */
+function piecePCM(p, src, sampleRate, channels) {
+  const sp = segmentSpeed(p.s);
+  const P0 = Math.floor((p.o0 - p.xin) * sampleRate), P1 = Math.ceil((p.o1 + p.xout) * sampleRate);
+  const len = Math.max(0, P1 - P0);
+  // Clip seconds at output sample P0, and how many clip samples the piece covers at its speed.
+  const t0 = p.s.sourceIn + (p.a - p.s.start + (P0 / sampleRate - p.o0)) * sp;
+  const stretch = Math.abs(sp - 1) > 1e-4;
+  const want = stretch ? Math.ceil(len * sp) + 2 : len;
+  const pos0 = t0 * src.sampleRate, step = src.sampleRate / sampleRate;
+  const srcCh = Array.from({ length: src.numberOfChannels }, (_, c) => src.getChannelData(c));
+  const slice = Array.from({ length: channels }, (_, c) => {
+    const d = srcCh[Math.min(c, srcCh.length - 1)], L = d.length, o = new Float32Array(want);
+    for (let m = 0; m < want; m++) {
+      const pos = pos0 + m * step, i = Math.floor(pos), f = pos - i;
+      if (i >= 0 && i + 1 < L) o[m] = d[i] * (1 - f) + d[i + 1] * f;
+    }
+    return o;
+  });
+  if (!stretch) return { P0, data: slice };
+  const st = timeStretch(slice, sp, { sampleRate });
+  return { P0, data: st.map((d) => (d.length >= len ? d.subarray(0, len) : Float32Array.from({ length: len }, (_, m) => d[m] || 0))) };
 }
 
 // ---- intro / outro bumpers (S-02) ----------------------------------------------------------------
@@ -247,7 +373,7 @@ async function openMusic(ctx, { sampleRate, channels }) {
     const ac = new OfflineAudioContext(Math.max(1, channels), 1, sampleRate);
     const song = await ac.decodeAudioData(await ctx.musicBlob.arrayBuffer());
     const total = totalDuration(ctx.kept);
-    const speech = speechIntervals(ctx.edit.words, ctx.kept);
+    const speech = speechIntervals(ctx.speechWords || ctx.edit.words, ctx.kept);
     const src = Array.from({ length: song.numberOfChannels }, (_, c) => song.getChannelData(c));
     const BLOCK = 128;
     return {

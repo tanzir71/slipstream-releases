@@ -37,7 +37,7 @@ export async function openMic(deviceId) {
   });
 }
 
-/** Live level meter for a stream. Returns { level(): 0..1, close() }. */
+/** Live level meter for a stream. Returns { level(): 0..1, db(): peak dBFS, close() }. */
 export function meter(stream) {
   const ac = new AudioContext();
   const src = ac.createMediaStreamSource(stream);
@@ -45,10 +45,35 @@ export function meter(stream) {
   an.fftSize = 512;
   src.connect(an);
   const buf = new Float32Array(an.fftSize);
+  const peak = () => { an.getFloatTimeDomainData(buf); let m = 0; for (const v of buf) m = Math.max(m, Math.abs(v)); return m; };
   return {
-    level() { an.getFloatTimeDomainData(buf); let m = 0; for (const v of buf) m = Math.max(m, Math.abs(v)); return Math.min(1, m * 1.6); },
+    level() { return Math.min(1, peak() * 1.6); },
+    db() { const m = peak(); return m > 0 ? 20 * Math.log10(m) : -Infinity; },
     close() { if (ac.state !== 'closed') ac.close().catch(() => {}); },
   };
+}
+
+/**
+ * The mic level while recording, pushed rather than polled: cb({ db, level }) about 12 times a second from the
+ * audio thread, so it keeps running while the tab is in the background (rAF stops there and timers are throttled)
+ * and drives the floating pill and the mute nudges. Returns { close() }.
+ */
+export function levelMonitor(stream, cb, { size = 4096 } = {}) {
+  const ac = new AudioContext();
+  ac.resume?.().catch(() => {});
+  const src = ac.createMediaStreamSource(stream);
+  // ScriptProcessor is deprecated but runs everywhere without a module file; it only reads the samples.
+  const node = ac.createScriptProcessor(size, 1, 1);
+  const mute = ac.createGain();
+  mute.gain.value = 0;
+  node.onaudioprocess = (e) => {
+    const d = e.inputBuffer.getChannelData(0);
+    let m = 0;
+    for (let i = 0; i < d.length; i++) { const v = d[i] < 0 ? -d[i] : d[i]; if (v > m) m = v; }
+    try { cb({ db: m > 0 ? 20 * Math.log10(m) : -Infinity, level: Math.min(1, m * 1.6) }); } catch (err) { console.error(err); }
+  };
+  src.connect(node); node.connect(mute); mute.connect(ac.destination);
+  return { close() { node.onaudioprocess = null; if (ac.state !== 'closed') ac.close().catch(() => {}); } };
 }
 
 export class Session {
@@ -66,17 +91,59 @@ export class Session {
     this.elapsed = 0;
     this._t = 0;
     this.pauses = []; // [from, to] in performance.now() ms; the screen file leaves these out
+    this.muted = false;
+    this.cameraOn = true;
+    this.cameraOffs = []; // [from, to] in performance.now() ms with the camera turned off
   }
 
   _mixedStream() {
     const audioTracks = [...this.display.getAudioTracks(), ...(this.mic ? this.mic.getAudioTracks() : [])];
     const video = this.display.getVideoTracks()[0];
-    if (audioTracks.length <= 1) return new MediaStream([video, ...audioTracks]);
+    // The mic always goes through a gain node, so muting records silence while the level meter (reading the
+    // mic itself) can still tell the user they're talking while muted.
+    if (!this.mic?.getAudioTracks().length && audioTracks.length <= 1) return new MediaStream([video, ...audioTracks]);
     this.ac = new AudioContext();
+    this.ac.resume?.().catch(() => {});
     const dest = this.ac.createMediaStreamDestination();
     if (this.display.getAudioTracks().length) this.ac.createMediaStreamSource(new MediaStream(this.display.getAudioTracks())).connect(dest);
-    if (this.mic) this.ac.createMediaStreamSource(this.mic).connect(dest);
+    if (this.mic?.getAudioTracks().length) {
+      this.micGain = this.ac.createGain();
+      this.micGain.gain.value = this.muted ? 0 : 1;
+      this.micSource = this.ac.createMediaStreamSource(this.mic);
+      this.micSource.connect(this.micGain).connect(dest);
+    }
     return new MediaStream([video, ...dest.stream.getAudioTracks()]);
+  }
+
+  /** Mute the microphone in the recording (silence is recorded; the take keeps going). */
+  setMuted(on) {
+    this.muted = !!on;
+    if (this.micGain) this.micGain.gain.setTargetAtTime(this.muted ? 0 : 1, this.ac.currentTime, 0.01);
+  }
+
+  /**
+   * Record from another microphone without stopping (the silent-mic nudge's Switch). Only when the mic already
+   * goes through the mixer; returns false otherwise. The old mic's tracks are stopped.
+   */
+  setMic(stream) {
+    if (!this.ac || !this.micGain || !stream?.getAudioTracks().length) return false;
+    try { this.micSource?.disconnect(); } catch { /* already gone */ }
+    this.micSource = this.ac.createMediaStreamSource(stream);
+    this.micSource.connect(this.micGain);
+    if (this.mic && this.mic !== stream) this.mic.getTracks().forEach((t) => t.stop());
+    this.mic = stream;
+    return true;
+  }
+
+  /** Turn the camera layer off and on during a take. Off stretches record black and become "screen only" scenes. */
+  setCameraOn(on) {
+    on = !!on;
+    if (on === this.cameraOn || !this.camera) return;
+    this.cameraOn = on;
+    for (const t of this.camera.getVideoTracks()) t.enabled = on;
+    const now = performance.now();
+    if (!on) this.cameraOffs.push([now, Infinity]);
+    else { const last = this.cameraOffs[this.cameraOffs.length - 1]; if (last && last[1] === Infinity) last[1] = now; }
   }
 
   start() {
@@ -132,7 +199,7 @@ export class Session {
   _endPause(at) { const p = this.pauses[this.pauses.length - 1]; if (p && p[1] === Infinity) p[1] = at; }
 
   /** Where the screen file's t = 0 is (performance.now() ms) and the paused stretches it leaves out, for alignCursor(). */
-  timeline() { return { start: this.startedAt.screen || this._t, pauses: this.pauses.map((p) => [...p]) }; }
+  timeline() { return { start: this.startedAt.screen || this._t, pauses: this.pauses.map((p) => [...p]), cameraOffs: this.cameraOffs.map((p) => [...p]) }; }
 
   stop() {
     if (!this._stopping) this._stopping = this._stop();
@@ -160,11 +227,15 @@ export class Session {
     return this.result;
   }
 
-  discard() {
+  /** Throw the take away. keepStreams: leave the screen, camera and mic open (restart the take with them). */
+  discard({ keepStreams = false } = {}) {
     this.state = 'stopped';
+    for (const rec of [this.screenRec, this.camRec]) { if (rec) { rec.ondataavailable = null; rec.onstop = null; } }
     try { this.screenRec?.stop(); this.camRec?.stop(); } catch { /* ignore */ }
     this.sinks.screen?.abort(); this.sinks.camera?.abort();
-    this.release();
+    if (keepStreams) { if (this.ac && this.ac.state !== 'closed') this.ac.close().catch(() => {}); } else this.release();
+    // The camera comes back on for the next take.
+    for (const t of this.camera?.getVideoTracks() || []) t.enabled = true;
   }
 
   release() {
@@ -208,9 +279,15 @@ export function screenBitrate(track) {
   return Math.round(Math.max(8_000_000, Math.min(24_000_000, perSecond * 0.08)));
 }
 
-export async function pickDisplay({ systemAudio = true } = {}) {
+/**
+ * The browser's own share picker. surface: 'monitor' | 'window' | 'browser' asks it to open on that tab of the
+ * picker (a hint: the user can still pick anything). controller: a CaptureController, so the browser doesn't jump
+ * to the shared tab or window when recording starts (Chrome 109+).
+ */
+export async function pickDisplay({ systemAudio = true, surface = null, controller = null } = {}) {
   return navigator.mediaDevices.getDisplayMedia({
-    video: { frameRate: { ideal: 30, max: 60 }, cursor: 'always' },
+    video: { frameRate: { ideal: 30, max: 60 }, cursor: 'always', ...(surface ? { displaySurface: surface } : {}) },
+    ...(controller ? { controller } : {}),
     audio: systemAudio,
     selfBrowserSurface: 'exclude',
     surfaceSwitching: 'include',

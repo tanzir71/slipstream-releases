@@ -20,17 +20,27 @@ export function chaptersText(words, duration, kept) {
   return dedup.map((c) => `${chapterTimestamp(c.out)} ${c.title}`).join('\n');
 }
 
+/** Resolves the promise, or rejects after ms (the built-in model's calls can hang, e.g. offline). */
+function within(promise, ms) {
+  let timer;
+  return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timed out')), ms); })]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * The browser's built-in Summarizer, only when its model is already on this device. "downloadable" would make
+ * Chrome fetch the model silently (downloads must be visible, see CLAUDE.md), and availability() itself can hang
+ * offline, so it is time-boxed.
+ */
 export async function summarizerAvailable() {
   try {
     if (!('Summarizer' in self)) return false;
-    const a = await self.Summarizer.availability();
-    return a === 'available' || a === 'downloadable' || a === 'downloading';
+    return (await within(self.Summarizer.availability(), 1500)) === 'available';
   } catch { return false; }
 }
 
 async function summarize(text, type, length) {
-  const s = await self.Summarizer.create({ type, format: 'plain-text', length, sharedContext: 'A transcript of a screen recording / creator video.' });
-  try { return (await s.summarize(text.slice(0, 12000))).trim(); } finally { s.destroy?.(); }
+  const s = await within(self.Summarizer.create({ type, format: 'plain-text', length, sharedContext: 'A transcript of a screen recording / creator video.' }), 10000);
+  try { return (await within(s.summarize(text.slice(0, 12000)), 30000)).trim(); } finally { s.destroy?.(); }
 }
 
 /** Returns { title, description, source: 'on-device AI' | 'transcript' }. */

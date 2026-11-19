@@ -1,13 +1,16 @@
 // Frame compositor. The SAME function renders the live preview and the exported file, so the preview
 // is exactly what you export. Inputs can be <video> elements (preview) or canvases (export decode).
 
-import { zoomAt } from './edl.js';
+import { zoomAt, sequenceTime } from './edl.js';
 import { cueAt, drawCaption } from './captions.js';
 import { WALLPAPERS, resolveBackground, wallpaperBitmap } from './wallpapers.js';
-import { layoutBlendAt, layoutAt, lerpRect } from '../../packages/editor-core/src/scenes.js';
+import { layoutBlendAt, lerpRect } from '../../packages/editor-core/src/scenes.js';
 import { activeAt, maskRectAt, fadeAlpha, ANNOTATION_COLOR } from '../../packages/editor-core/src/overlays.js';
+import { frameAt, screenGeometry, fillCrop, cropPixels, cropCentre } from '../../packages/editor-core/src/frame.js';
+import { transitionsAt } from '../../packages/editor-core/src/transitions.js';
 
 export { WALLPAPERS as BACKGROUNDS } from './wallpapers.js';
+const transitionCache = {};
 const gradCache = new Map();
 
 function roundRectPath(ctx, x, y, w, h, r) {
@@ -95,17 +98,25 @@ function cameraRadius(R, m) {
 export function layoutForTime(edit, W, H, sDims, cDims, t) {
   const m = Math.min(W, H);
   const blend = layoutBlendAt(edit, t);
-  const B = computeLayout({ ...edit, layout: blend.to }, W, H, sDims, cDims);
+  // Frame (E-01): on a background or full screen, per section of the Layout track. Full screen is the same layout
+  // with padding, corners and shadow eased to 0, and the screen filling (or fitting) its area.
+  const fs = frameAt(edit.style, edit.frameSections, t);
+  const framed = { ...edit, style: { ...edit.style, padding: fs.padding, radius: fs.radius } };
+  const fullCover = edit.style?.fit === 'fit' ? 0 : 1;
+  const coverOf = (L) => (L.screenFill ? 1 : 0) + (fullCover - (L.screenFill ? 1 : 0)) * fs.full;
+  const B = computeLayout({ ...framed, layout: blend.to }, W, H, sDims, cDims);
   if (B.camera) B.camera.r = cameraRadius(B.camera, m);
   B.screenAlpha = 1; B.cameraAlpha = 1; B.mode = blend.to.mode;
+  B.full = fs.full; B.shadow = fs.shadow; B.cover = coverOf(B);
   if (blend.k >= 1) return B;
-  const A = computeLayout({ ...edit, layout: blend.from }, W, H, sDims, cDims);
+  const A = computeLayout({ ...framed, layout: blend.from }, W, H, sDims, cDims);
   if (A.camera) A.camera.r = cameraRadius(A.camera, m);
   const k = blend.k;
   const out = { ...B, mode: blend.to.mode };
   out.screen = lerpRect(A.screen, B.screen, k);
   out.screenAlpha = A.screen && B.screen ? 1 : A.screen ? 1 - k : k;
   out.screenFill = k < 0.5 ? A.screenFill : B.screenFill;
+  out.cover = coverOf(A) + (B.cover - coverOf(A)) * k;
   if (A.camera || B.camera) {
     const r = lerpRect(A.camera, B.camera, k);
     out.camera = { ...r, shape: (k < 0.5 ? A.camera : B.camera)?.shape || 'rounded', full: false, r: (A.camera?.r ?? B.camera.r) + ((B.camera?.r ?? A.camera.r) - (A.camera?.r ?? B.camera.r)) * k, ring: (A.camera?.ring || 0) * (1 - k) + (B.camera?.ring || 0) * k };
@@ -119,14 +130,15 @@ export function usesCamera(edit) {
   return edit.layout.mode !== 'screen' || (edit.scenes || []).some((s) => (s.layout?.mode ?? edit.layout.mode) !== 'screen');
 }
 
-function drawBackground(ctx, W, H, edit, screenSrc, sDims) {
+function drawBackground(ctx, W, H, edit, screenSrc, sDims, t) {
   const S = edit.style;
   if (S.bg === 'solid') { ctx.fillStyle = S.solid || '#0b0d12'; ctx.fillRect(0, 0, W, H); return; }
   if (S.bg === 'blur' && screenSrc && sDims) {
     const small = blurCanvas(Math.max(8, Math.round(W / 28)), Math.max(8, Math.round(H / 28)));
     const sctx = small.getContext('2d');
-    const c = coverCrop(sDims.w, sDims.h, small.width, small.height);
-    sctx.drawImage(screenSrc, c.x, c.y, c.w, c.h, 0, 0, small.width, small.height);
+    const a = cropPixels(cropAt(edit, t), sDims.w, sDims.h);
+    const c = coverCrop(a.w, a.h, small.width, small.height);
+    sctx.drawImage(screenSrc, a.x + c.x, a.y + c.y, c.w, c.h, 0, 0, small.width, small.height);
     ctx.save();
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
@@ -168,34 +180,63 @@ function blurCanvas(w, h) {
 }
 
 
-function drawScreen(ctx, W, H, layout, edit, src, sDims, z, t) {
+function drawScreen(ctx, W, H, layout, edit, src, sDims, z, t, cursor) {
   const area = layout.screen;
   if (!area || !src || !sDims || area.w < 1 || area.h < 1 || layout.screenAlpha <= 0) return;
   ctx.save();
   ctx.globalAlpha = layout.screenAlpha ?? 1;
-  drawScreenInner(ctx, W, H, layout, edit, src, sDims, z, area, t);
+  drawScreenInner(ctx, W, H, layout, edit, src, sDims, z, area, t, cursor);
   ctx.restore();
 }
 
 /**
  * Where the screen recording lands at zoom z: `dest` is its rect on the canvas and `view` the part of the source
- * (in source pixels) drawn into it. Masks, annotations and pointer mapping all use this, so they follow zooms.
+ * (in pixels of the whole source) drawn into it. Masks, annotations and pointer mapping all use this, so they follow
+ * zooms. The Area crop (edit.frame.crop) bounds the view; in full screen with Fill the crop follows the cursor
+ * (E-01, frame.js), eased with the frame so a section transition never jumps.
  */
-function screenView(layout, sDims, z) {
-  const area = layout.screen;
-  const fill = layout.screenFill;
-  const dest = fill ? area : fitContain(sDims.w, sDims.h, area);
-  const base = fill ? coverCrop(sDims.w, sDims.h, dest.w, dest.h, z.k > 0 ? z.x : 0.5, z.k > 0 ? z.y : 0.5) : { x: 0, y: 0, w: sDims.w, h: sDims.h };
-  const vw = base.w / z.scale, vh = base.h / z.scale;
-  const cx = Math.max(base.x + vw / 2, Math.min(base.x + base.w - vw / 2, z.x * sDims.w));
-  const cy = Math.max(base.y + vh / 2, Math.min(base.y + base.h - vh / 2, z.y * sDims.h));
-  return { dest, view: { x: cx - vw / 2, y: cy - vh / 2, w: vw, h: vh } };
+/**
+ * The source crop at t: in a multi-clip project the segment's crop for the output aspect (Auto edit reframing,
+ * AE-06) when it has one, else the Area crop (edit.frame.crop).
+ */
+function cropAt(edit, t) {
+  if (edit?.segments?.length && t != null) {
+    const c = sequenceTime(edit.segments, t)?.segment.crops?.[edit.aspect];
+    if (Array.isArray(c) && c.length === 4) return c;
+  }
+  return edit?.frame?.crop;
 }
 
-function drawScreenInner(ctx, W, H, layout, edit, src, sDims, z, area, t) {
-  const { dest, view } = screenView(layout, sDims, z);
+/** A photo segment's slow push-in (segment.photoMotion { from, to, x?, y? }) folded into the zoom at t. */
+function withPhotoMotion(z, edit, t) {
+  if (!edit?.segments?.length) return z;
+  const a = sequenceTime(edit.segments, t);
+  const pm = a?.segment.photoMotion;
+  if (!pm || typeof pm !== 'object') return z;
+  const s0 = pm.from ?? 1, s1 = pm.to ?? 1;
+  const k = Math.max(0, Math.min(1, (t - a.segment.start) / Math.max(1e-6, a.segment.end - a.segment.start)));
+  const s = Math.max(1, s0 + (s1 - s0) * k);
+  return z.k > 0 ? { ...z, scale: z.scale * s } : { scale: s, x: pm.x ?? 0.5, y: pm.y ?? 0.5, k: 1, id: null };
+}
+
+function screenView(layout, sDims, z, edit, t, cursor) {
+  const area = layout.screen;
+  const crop = cropAt(edit, t);
+  const cover = layout.cover ?? (layout.screenFill ? 1 : 0);
+  let focus = null;
+  const full = layout.full || 0;
+  if (full > 0 && cover > 0 && edit?.style?.followCursor !== false && cursor?.length && t != null) {
+    const c = fillCrop({ srcW: sDims.w, srcH: sDims.h, dstW: area.w, dstH: area.h, t, samples: cursor, follow: true, zoom: z, crop });
+    const bg = z.k > 0 ? { x: z.x, y: z.y } : cropCentre(cropPixels(crop, sDims.w, sDims.h), sDims.w, sDims.h);
+    focus = { x: bg.x + (c.x + c.w / 2 - bg.x) * full, y: bg.y + (c.y + c.h / 2 - bg.y) * full };
+  }
+  return screenGeometry({ srcW: sDims.w, srcH: sDims.h, area, cover, zoom: z, focus, crop });
+}
+
+function drawScreenInner(ctx, W, H, layout, edit, src, sDims, z, area, t, cursor) {
+  const { dest, view } = screenView(layout, sDims, z, edit, t, cursor);
   const r = layout.radius;
-  const shadow = edit.style.shadow || 0;
+  const shadow = layout.shadow ?? edit.style.shadow ?? 0;
   if (shadow > 0 && layout.pad > 0) {
     ctx.save();
     const m = Math.min(W, H);
@@ -284,10 +325,10 @@ function hexA(hex, a) {
 }
 
 /** Arrows, boxes, highlights and text callouts, placed in source space and sized in output pixels (like macOS). */
-function drawAnnotations(ctx, W, H, layout, edit, sDims, z, t) {
+function drawAnnotations(ctx, W, H, layout, edit, sDims, z, t, cursor) {
   const list = activeAt(edit.annotations, t);
   if (!list.length || !layout.screen || !sDims || layout.screenAlpha <= 0) return;
-  const { dest, view } = screenView(layout, sDims, z);
+  const { dest, view } = screenView(layout, sDims, z, edit, t, cursor);
   const map = (fx, fy) => ({ x: dest.x + (fx * sDims.w - view.x) * (dest.w / view.w), y: dest.y + (fy * sDims.h - view.y) * (dest.h / view.h) });
   const m = Math.min(W, H);
   const lw = Math.max(3, m * 0.006);
@@ -351,12 +392,12 @@ function drawAnnotations(ctx, W, H, layout, edit, sDims, z, t) {
  * (the preview's reduced-motion setting included). For drawing and dragging masks and annotations.
  * Returns null when the screen isn't on screen at t.
  */
-export function screenMapping(edit, W, H, sDims, cDims, t, { reducedMotion = false } = {}) {
+export function screenMapping(edit, W, H, sDims, cDims, t, { reducedMotion = false, cursor = null } = {}) {
   if (!sDims) return null;
   const layout = layoutForTime(edit, W, H, sDims, cDims, t);
   if (!layout.screen || layout.screen.w < 1) return null;
   const z0 = zoomAt(edit.zooms, t);
-  const { dest, view } = screenView(layout, sDims, reducedMotion ? snapZoom(z0) : z0);
+  const { dest, view } = screenView(layout, sDims, reducedMotion ? snapZoom(z0) : z0, edit, t, cursor);
   return {
     dest,
     toCanvas: (fx, fy) => ({ x: dest.x + (fx * sDims.w - view.x) * (dest.w / view.w), y: dest.y + (fy * sDims.h - view.y) * (dest.h / view.h) }),
@@ -500,20 +541,27 @@ function drawLowerThird(ctx, W, H, lt, t) {
 
 /**
  * Render one frame.
- * f = { screen, camera, edit, t, cues }  (t = SOURCE time of the screen recording)
+ * f = { screen, camera, edit, t, cues, overlays?, cursor?, reducedMotion? }  (t = SOURCE time of the screen recording;
+ * cursor = recorded pointer samples, for the full-screen crop that keeps the cursor in view)
  */
 export function renderFrame(ctx, W, H, f) {
   const sDims = dimsOf(f.screen);
   const cDims = f.camera ? dimsOf(f.camera) : null;
   const layout = layoutForTime(f.edit, W, H, sDims, cDims, f.t);
-  drawBackground(ctx, W, H, f.edit, f.screen, sDims);
-  const z = f.reducedMotion ? snapZoom(zoomAt(f.edit.zooms, f.t)) : zoomAt(f.edit.zooms, f.t);
-  drawScreen(ctx, W, H, layout, f.edit, f.screen, sDims, z, f.t);
+  drawBackground(ctx, W, H, f.edit, f.screen, sDims, f.t);
+  // Auto edit transitions (AE-09): zoom punch on downbeats, flash on the drop, a dip at section cuts.
+  const trn = transitionsAt(f.edit, f.t, transitionCache);
+  let z0 = withPhotoMotion(zoomAt(f.edit.zooms, f.t), f.edit, f.t);
+  if (trn.scale !== 1 && !f.reducedMotion) z0 = { ...z0, scale: z0.scale * trn.scale };
+  const z = f.reducedMotion ? snapZoom(z0) : z0;
+  drawScreen(ctx, W, H, layout, f.edit, f.screen, sDims, z, f.t, f.cursor);
   drawBroll(ctx, W, H, layout, f.edit, f.t, f.overlays?.broll);
   drawCamera(ctx, W, H, layout, f.edit, f.camera, cDims);
   // Annotations sit above B-roll and the camera, under the logo and captions (same order as macOS and the engine).
-  drawAnnotations(ctx, W, H, layout, f.edit, sDims, z, f.t);
+  drawAnnotations(ctx, W, H, layout, f.edit, sDims, z, f.t, f.cursor);
   drawLogo(ctx, W, H, f.edit.brand?.logo, f.overlays?.logo);
+  if (trn.alpha < 1) { ctx.save(); ctx.globalAlpha = 1 - trn.alpha; ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H); ctx.restore(); }
+  if (trn.flash > 0 && !f.reducedMotion) { ctx.save(); ctx.globalAlpha = trn.flash; ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H); ctx.restore(); }
   drawLowerThird(ctx, W, H, f.edit.brand?.lowerThird, f.t);
   if (f.edit.captions.enabled && f.cues && f.cues.length) {
     drawCaption(ctx, W, H, cueAt(f.cues, f.t), f.t, f.edit.captions);
@@ -530,14 +578,12 @@ function snapZoom(z) {
 }
 
 /** Inverse-map a point on the preview canvas to normalized screen-source coordinates (for zoom focus). */
-export function canvasPointToSource(edit, W, H, sDims, cDims, px, py, t = 0) {
-  const layout = computeLayout({ ...edit, layout: layoutAt(edit, t) }, W, H, sDims, cDims);
-  const area = layout.screen;
-  if (!area || !sDims) return null;
-  const dest = layout.screenFill ? area : fitContain(sDims.w, sDims.h, area);
+export function canvasPointToSource(edit, W, H, sDims, cDims, px, py, t = 0, cursor = null) {
+  if (!sDims) return null;
+  const layout = layoutForTime(edit, W, H, sDims, cDims, t);
+  if (!layout.screen) return null;
+  const { dest, view } = screenView(layout, sDims, { scale: 1, x: 0.5, y: 0.5, k: 0 }, edit, t, cursor);
   const u = (px - dest.x) / dest.w, v = (py - dest.y) / dest.h;
   if (u < 0 || u > 1 || v < 0 || v > 1) return null;
-  if (!layout.screenFill) return { x: u, y: v };
-  const c = coverCrop(sDims.w, sDims.h, dest.w, dest.h);
-  return { x: (c.x + u * c.w) / sDims.w, y: (c.y + v * c.h) / sDims.h };
+  return { x: (view.x + u * view.w) / sDims.w, y: (view.y + v * view.h) / sDims.h };
 }
