@@ -5,7 +5,9 @@
 //   fromV2(plan)                                   v2 -> { edit, media, meta } in the web shape
 //   fromEngineV1(enginePlan, opts?)                Rust slipstream_engine EditPlan v1 -> v2
 //   toEngine(plan, opts?)                          v2 -> engine EditPlan v1 for `slipstream_engine render-plan`
-//   fromSwiftV1(json, opts?)                       macOS 1.x project JSON (best effort) -> v2
+//   fromSwiftV1(json, opts?)                       macOS 1.x project JSON -> v2 (fromMacOSV1, else best effort)
+//   fromMacOSV1(json, opts?) / macOSV1Sequences    verified macOS 1.x Project or sequence -> v2 / its sequences
+//   fromReelproj(json)                             ReelMaker prototype .reelproj -> v2
 //   detectPlanShape(json) / migratePlan(json)      sniff any of the above and return v2
 //   validatePlan(plan)                             JSON Schema check against PLAN_SCHEMA
 //
@@ -719,9 +721,10 @@ export function toEngine(plan, { units = 'fraction', reference = DEFAULT_REFEREN
 }
 
 // ---------------------------------------------------------------------------------------------------------
-// macOS 1.x -> v2 (best effort)
+// Pre-verification macOS shape -> v2 (best effort)
 //
-// The Swift source isn't available; names below are guesses from type names in the binary
+// Kept for files written in the shapes guessed before the 1.x source was recovered; real 1.x projects go through
+// fromMacOSV1 below (fromSwiftV1 routes them there). The names below are guesses from type names in the binary
 // (docs/ARCHITECTURE.md §1.1) and Swift's synthesized Codable conventions:
 // - Dates: default JSONEncoder strategy (seconds since 2001-01-01), Unix seconds/ms, or ISO strings.
 // - URLs: plain strings, file URL strings, or {"relative": "file:///…"}.
@@ -767,8 +770,17 @@ function swiftBackground(j) {
   };
 }
 
-/** macOS 1.x project JSON -> v2 (see the assumptions above). */
-export function fromSwiftV1(json, { reference = DEFAULT_REFERENCE } = {}) {
+/**
+ * macOS 1.x project JSON -> v2. Real 1.x files (a Project with sequences, or one EditPlan sequence) use the verified
+ * migration (fromMacOSV1, opts.sequence picks the sequence); other shapes use the best-effort reader above.
+ */
+export function fromSwiftV1(json, opts = {}) {
+  const shape = detectPlanShape(json);
+  if (shape === 'macos-v1' || shape === 'macos-v1-plan') return fromMacOSV1(json, opts);
+  return fromSwiftGuess(json, opts);
+}
+
+function fromSwiftGuess(json, { reference = DEFAULT_REFERENCE } = {}) {
   if (!isObj(json)) throw new TypeError('fromSwiftV1: expected a project object');
   const j = clone(json), d = defaultEdit();
   const size = swiftSize(pick(j, 'videoSize', 'naturalSize', 'size', 'dimensions'));
@@ -848,15 +860,635 @@ export function fromSwiftV1(json, { reference = DEFAULT_REFERENCE } = {}) {
 }
 
 // ---------------------------------------------------------------------------------------------------------
+// Slipstream 1.x for macOS -> v2 (verified against the shipped 1.0 source)
+//
+// project.json is `Project { id, name, createdAt, modifiedAt (seconds since 2001), bin: [MediaAsset { id, name, kind,
+// bookmark, urlPath, duration, hasAudio }], sequences: [EditPlan] }`. An EditPlan (one sequence) is { id, name,
+// clips: [{ id, assetID, track: video|overlay|audio, start (OUTPUT position), sourceIn, duration, name, isGap }],
+// words: [{ id, text, start, end, isCut }], keepRanges (always []), captions { enabled = false, preset subtitle|
+// karaoke|bigWord = bigWord, cues (OUTPUT time), fontScale = 1, position = 0.12 (fraction of the height from the
+// bottom), fillChoice 0–3 = 0, boxed = false }, zooms: [{ id, startTime, endTime, focus [x, y], style gentle|standard|
+// dramatic|punchIn } or legacy { time, holdDuration }], cursor { smoothing .6, size 1, showClicks true, motionBlur
+// false, hideHardwareCursor true }, staging { backgroundKind none|color|gradient|image (missing: color when
+// backgroundHex is set, else none), backgroundHex, gradientID, imagePath, padding 0–1, cornerRadius, shadow, scale 1,
+// offsetX, offsetY }, overlays, frame { aspect source|vertical9x16|square1x1, reframe centerCrop|smartTrack },
+// stylePreset { name }, recordingMeta { rateHz, screenSize [w, h] points, cursorSamples [{ t, x, y }], clicks
+// [{ t, x, y, button }] }, audio { gain 0–2, fadeIn, fadeOut }, manualCuts [[lo, hi]] (source), camera { assetID,
+// layout pip|splitLeft|splitRight|splitTop|splitBottom, position bottomRight|bottomLeft|topRight|topLeft|bottomCenter|
+// topCenter, scale .26, splitRatio .5, rounded true, margin .04, enabled true } }.
+//
+// The migration reproduces what 1.x actually rendered (Render/CompositionBuilder.swift, Model/KeepPlan.swift,
+// Model/OutputMap.swift). The Swift Kit (LegacyV1.swift) and the Rust engine match it through
+// test/parity/v1-swift.json:
+// - Edit model. 1.x plays the transcript model (word cuts + manualCuts, limited to the video clip windows) unless the
+//   sequence is segment based (a gap clip, or 2+ video clips with no cut word and no manualCuts: "Flatten cuts to
+//   clips"), where the video clips play in timeline order with gaps as background + silence. Clip windows (or
+//   flattened clips) in source order without gaps become source-time cuts: `range` = first window start … last
+//   window end, a 'manual' cut between consecutive windows, and the 1.x manualCuts as 'manual' cuts. Gaps, reordered
+//   or overlapping windows become v2 `segments` (output timeline; they take precedence over words and cuts).
+//   Deleted words stay deleted: 2.0 also removes the pause after a deleted run, so a little more is cut than in 1.x.
+//   Audio-track clips (unlinked J/L audio) are not carried over: audio follows the video.
+// - "Create short" sequences stored words shifted by −sourceIn (a 1.x bug): with one video clip at sourceIn > 0 whose
+//   words all fit [0, clip duration] but not the clip window (or the short's 9:16 + smartTrack signature), sourceIn
+//   is added back and the explicit cues are dropped (rebuilt from the words).
+// - Zooms: scale by style (gentle 1.25, standard 1.4, dramatic 1.8, punchIn 1.5; unknown = standard); a legacy
+//   { time, holdDuration } zoom is [time, time + max(1, holdDuration ?? 1.2)]. As in 1.x, a zoom whose start is cut is
+//   skipped, and so is one whose 0.4 s ease-in would start before the previous zoom's ease-out ends (output time,
+//   sorted by output start). 1.x eases linearly 0.4 s before the start and after the end: v2 gets
+//   [start − 0.4, end + 0.4] (clamped to the source) with ramp 0.4; punchIn keeps [start, end] with ramp 0. Split
+//   layouts showed no zooms in 1.x, so a split sequence gets none.
+// - Captions: cues are OUTPUT time; they are mapped back to source time through the 1.x keep ranges (KeepPlan.unmap,
+//   or the flattened clips) and dropped (rebuilt from the words) when the plan needs segments or is a shifted short.
+//   preset subtitle → cinema, bigWord → bold, karaoke → karaoke; position < 0.3 → bottom, < 0.6 → middle, else top;
+//   size = fontScale clamped 0.4–2; fillChoice → white|yellow|mint|pink; boxed kept; enabled as saved (default off).
+// - Frame: source → the screen's aspect (recordingMeta.screenSize, else 16:9); vertical9x16 → 9:16; square1x1 →
+//   1:1. Reframe stays a centre crop (smartTrack was UI only). The screen fills the frame (layout.fit cover).
+// - Camera: the PiP is a square of side scale × output HEIGHT, inset margin × output WIDTH; v2 size and margin are
+//   fractions of the short side, so size = scale × H / min(W, H) (clamped 0.08–0.5), margin = margin × W / min(W, H),
+//   with W × H the 1.x output frame (the aspect above). pip → pip, split* → split (the side is v2's), enabled false
+//   → screen; corner from position (bottomCenter → br, topCenter → tr); rounded → rounded else square; splitRatio
+//   clamped 0.2–0.8 then 0.25–0.7; no mirror; cameraOffset 0.
+// - Style: padding = staging.padding clamped 0–0.45, then to v2's 0–0.2; radius 0 and shadow 0 (UI only in 1.x);
+//   none → solid black, color → solid backgroundHex (black without one), gradient → the closest wallpaper, image →
+//   imagePath; scale and offsets kept when not the defaults.
+// - Cursor: 1.x defaults; recordingMeta samples and left clicks become inline cursor.samples (decimated as the
+//   2.0 recorders do: inlineCursorSamples).
+// - Not representable: audio gain, cursor size, overlays (never rendered by 1.x), stylePreset. They are noted in
+//   `legacyV1` with the sequence list.
+
+const V1_ZOOM_SCALE = { gentle: 1.25, standard: 1.4, dramatic: 1.8, punchIn: 1.5 };
+const V1_ZOOM_RAMP = 0.4;
+const V1_FILLS = ['white', 'yellow', 'mint', 'pink'];
+const V1_CAPTION_PRESETS = { subtitle: 'cinema', karaoke: 'karaoke', bigWord: 'bold' };
+const V1_CORNERS = { bottomRight: 'br', bottomLeft: 'bl', topRight: 'tr', topLeft: 'tl', bottomCenter: 'br', topCenter: 'tr' };
+const V1_SPLITS = new Set(['splitLeft', 'splitRight', 'splitTop', 'splitBottom']);
+/** 1.x background gradients (Model/BackgroundPresets.swift) -> the closest 2.0 wallpaper. */
+const V1_GRADIENTS = {
+  sequoia: 'sage', sonoma: 'dusk', ventura: 'dusk', monterey: 'dusk', bigsur: 'morning', aurora: 'dusk',
+  sunset: 'sand', graphite: 'graphite', mojave: 'sand', tahoe: 'tide', ember: 'sand', midnight: 'dusk',
+};
+const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+const byLower = (a, b) => a[0] - b[0];
+
+/** [lo, hi] from a ClosedRange ([lo, hi]) or a range object. */
+function v1Range(r) {
+  const n = normRange(r);
+  return n && Number.isFinite(n.start) && Number.isFinite(n.end) && n.end >= n.start ? [n.start, n.end] : undefined;
+}
+
+/** KeepPlan.merge: sorted by lower bound, joined when the next starts within `gap` of the last end. */
+function v1Merge(ranges, gap) {
+  const sorted = ranges.map((r) => [r[0], r[1]]).sort(byLower);
+  const out = [];
+  for (const r of sorted) {
+    const last = out[out.length - 1];
+    if (last && r[0] <= last[1] + gap) last[1] = Math.max(last[1], r[1]);
+    else out.push(r);
+  }
+  return out;
+}
+
+/** KeepPlan.keepRanges: [0, duration] minus cut words ([start, max(start, end)]) and extra cuts. */
+function v1KeepRanges(duration, words, extraCuts) {
+  if (!(duration > 0)) return [];
+  const cuts = v1Merge([...extraCuts, ...words.filter((w) => w.isCut).map((w) => [w.start, Math.max(w.start, w.end)])], 0.02);
+  const keeps = [];
+  let cursor = 0;
+  for (const c of cuts) {
+    const lo = Math.max(0, c[0]);
+    if (lo > cursor + 0.001) keeps.push([cursor, lo]);
+    cursor = Math.max(cursor, Math.min(duration, c[1]));
+  }
+  if (cursor < duration - 0.001) keeps.push([cursor, duration]);
+  return keeps.length ? keeps : [[0, duration]];
+}
+
+/** KeepPlan.keepRangesForPlan: the keep ranges limited to the (non-gap) video clip windows, in timeline order. */
+function v1KeepRangesForPlan(words, clips, manualCuts, duration) {
+  const base = v1KeepRanges(duration, words, manualCuts);
+  const video = clips.filter((c) => c.track === 'video' && !c.isGap).sort((a, b) => a.start - b.start);
+  const clampTo = (w) => base.map((r) => {
+    const lo = Math.max(r[0], w[0]), hi = Math.min(r[1], w[1]);
+    return lo <= hi ? [lo, hi] : [lo, lo];
+  }).filter((r) => r[1] - r[0] > 0.05);
+  if (video.length <= 1) {
+    const c = video[0];
+    if (c && (c.sourceIn > 0 || c.duration < duration - 0.01)) return clampTo([c.sourceIn, c.sourceIn + c.duration]);
+    return base;
+  }
+  return video.flatMap((c) => clampTo([c.sourceIn, c.sourceIn + c.duration]));
+}
+
+/** KeepPlan.remap: source -> output through keep ranges sorted by lower bound; null inside a cut. */
+function v1Remap(t, keeps) {
+  let elapsed = 0;
+  for (const r of [...keeps].sort(byLower)) {
+    if (t < r[0]) return null;
+    if (t <= r[1]) return elapsed + (t - r[0]);
+    elapsed += r[1] - r[0];
+  }
+  return null;
+}
+
+/** KeepPlan.unmap: output -> source (past the end: the last kept source time). */
+function v1Unmap(o, keeps) {
+  const sorted = [...keeps].sort(byLower);
+  let elapsed = 0;
+  for (const r of sorted) {
+    const len = r[1] - r[0];
+    if (o <= elapsed + len) return r[0] + (o - elapsed);
+    elapsed += len;
+  }
+  return sorted.length ? sorted[sorted.length - 1][1] : o;
+}
+
+/** OutputMap: the video-track clips (gaps included) in timeline order, laid end to end. */
+function v1OutputMap(clips) {
+  const segs = [];
+  let cursor = 0;
+  for (const c of clips.filter((x) => x.track === 'video').sort((a, b) => a.start - b.start)) {
+    if (!(c.duration > 0.0005)) continue;
+    segs.push({ id: c.id, sourceIn: c.sourceIn, duration: c.duration, isGap: c.isGap, outStart: cursor });
+    cursor += c.duration;
+  }
+  return {
+    segs,
+    duration: cursor,
+    keepRanges: segs.filter((s) => !s.isGap).map((s) => [s.sourceIn, s.sourceIn + s.duration]),
+    out(src) {
+      for (const s of segs) if (!s.isGap && src >= s.sourceIn - 1e-6 && src <= s.sourceIn + s.duration + 1e-6) return s.outStart + (src - s.sourceIn);
+      return null;
+    },
+    src(o) {
+      for (const s of segs) if (o >= s.outStart - 1e-6 && o <= s.outStart + s.duration + 1e-6) return s.isGap ? null : s.sourceIn + (o - s.outStart);
+      const last = segs[segs.length - 1];
+      return last && !last.isGap ? last.sourceIn + last.duration : null;
+    },
+  };
+}
+
+/** Windows [lo, hi] that play in source order without overlapping. */
+const inSourceOrder = (ws) => ws.every((w, i) => i === 0 || w[0] >= ws[i - 1][1] - 1e-6);
+
+/**
+ * Decimates a dense pointer path (e.g. 60 Hz) for inline `cursor.samples`, as the 2.0 recorders do (Kit
+ * CursorSettings.inlineSamples): at most `rate` samples a second, moves under `minMove` dropped, the last sample before
+ * each pause and every click kept (as `click: true`), t rounded to ms and x/y to 1e-4.
+ */
+export function inlineCursorSamples(path, clicks = [], { rate = 30, minMove = 0.0015 } = {}) {
+  const r = (v, k) => Math.round(v * k) / k;
+  const c01 = (v) => Math.min(1, Math.max(0, v));
+  const out = [];
+  let last = null, pending = null;
+  const events = [...arr(path).map((p) => [p, false]), ...arr(clicks).map((p) => [p, true])]
+    .sort((a, b) => (a[0].t !== b[0].t ? a[0].t - b[0].t : (!a[1] && b[1] ? -1 : !b[1] && a[1] ? 1 : 0)));
+  for (const [p, isClick] of events) {
+    if (isClick) {
+      if (pending) { out.push({ t: r(pending.t, 1000), x: r(pending.x, 1e4), y: r(pending.y, 1e4) }); pending = null; }
+      out.push({ t: r(p.t, 1000), x: r(c01(p.x), 1e4), y: r(c01(p.y), 1e4), click: true });
+      last = p;
+      continue;
+    }
+    if (!last) { out.push({ t: r(p.t, 1000), x: r(p.x, 1e4), y: r(p.y, 1e4) }); last = p; continue; }
+    const moved = Math.hypot(p.x - last.x, p.y - last.y) >= minMove;
+    if (moved && p.t - last.t >= 1 / rate) {
+      if (pending && pending.t - last.t > 0.1 && Math.hypot(pending.x - last.x, pending.y - last.y) < minMove) out.push({ t: r(pending.t, 1000), x: r(pending.x, 1e4), y: r(pending.y, 1e4) });
+      out.push({ t: r(p.t, 1000), x: r(c01(p.x), 1e4), y: r(c01(p.y), 1e4) });
+      last = p; pending = null;
+    } else pending = p;
+  }
+  const tail = out[out.length - 1];
+  if (pending && tail && pending.t > tail.t) out.push({ t: r(pending.t, 1000), x: r(c01(pending.x), 1e4), y: r(c01(pending.y), 1e4) });
+  return out;
+}
+
+/** The sequences of a macOS 1.x project: [{ index, id, name }] (one entry for a bare sequence). */
+export function macOSV1Sequences(json) {
+  if (!isObj(json)) return [];
+  const seqs = Array.isArray(json.sequences) ? json.sequences.filter(isObj) : [json];
+  return seqs.map((s, index) => compact({ index, id: str(s.id), name: str(s.name) ?? `Sequence ${index + 1}` }));
+}
+
+/**
+ * macOS 1.x project (or one EditPlan sequence) -> v2, by the rules above. opts.sequence: which sequence
+ * (default 0, clamped); `legacyV1.sequences` lists them all so a host can offer the rest.
+ */
+export function fromMacOSV1(json, { sequence = 0 } = {}) {
+  if (!isObj(json)) throw new TypeError('fromMacOSV1: expected a 1.x project or sequence object');
+  const j = clone(json), d = defaultEdit();
+  const isProject = Array.isArray(j.sequences);
+  const seqs = isProject ? j.sequences.filter(isObj) : [j];
+  const index = clamp(int(sequence) ?? 0, 0, Math.max(0, seqs.length - 1));
+  const seq = seqs[index] || {};
+  const assets = new Map();
+  for (const a of isProject ? arr(j.bin).filter(isObj) : []) if (str(a.id) !== undefined) assets.set(str(a.id), a);
+  const asset = (id) => (str(id) === undefined ? undefined : assets.get(str(id)));
+
+  const clips = arr(seq.clips).filter(isObj).map((c, i) => ({
+    id: str(c.id) ?? `clip${i + 1}`,
+    assetID: str(c.assetID),
+    track: c.track === 'overlay' || c.track === 'audio' ? c.track : 'video',
+    start: toNum(c.start) ?? 0,
+    sourceIn: toNum(c.sourceIn) ?? 0,
+    duration: toNum(c.duration) ?? 0,
+    isGap: c.isGap === true,
+  }));
+  const videoTrack = clips.filter((c) => c.track === 'video').sort((a, b) => a.start - b.start);
+  const realVideo = videoTrack.filter((c) => !c.isGap);
+  const primary = videoTrack[0] ?? clips[0];
+  const bin = [...assets.values()];
+  const screenAsset = (primary && asset(primary.assetID)) ?? bin.find((a) => a.kind === 'screenRecording') ?? bin.find((a) => a.kind === 'video') ?? bin[0];
+
+  // Words as 1.x stored them (rawWords drive the 1.x timing below); `words` get the short's offset back.
+  const rawWords = arr(seq.words).filter(isObj).map((w, i) => ({
+    id: str(w.id) ?? `w${i}`, text: str(w.text) ?? '', start: toNum(w.start) ?? 0, end: toNum(w.end) ?? 0, isCut: w.isCut === true,
+  }));
+  const frame = isObj(seq.frame) ? seq.frame : {};
+  let shift = 0;
+  if (videoTrack.length === 1 && realVideo.length === 1 && realVideo[0].sourceIn > 0.01 && rawWords.length) {
+    const c = realVideo[0], eps = 0.01;
+    const fitsShifted = rawWords.every((w) => w.start >= -eps && w.end <= c.duration + eps);
+    const fitsWindow = rawWords.every((w) => w.start >= c.sourceIn - eps && w.end <= c.sourceIn + c.duration + eps);
+    const shortLook = frame.aspect === 'vertical9x16' && frame.reframe === 'smartTrack';
+    if (fitsShifted && (!fitsWindow || shortLook)) shift = c.sourceIn;
+  }
+  const words = rawWords.map((w) => compact({ id: w.id, text: w.text, start: round6(w.start + shift), end: round6(w.end + shift), deleted: w.isCut }));
+
+  const assetDuration = toNum(screenAsset?.duration);
+  const duration = assetDuration > 0 ? assetDuration
+    : Math.max(0, ...videoTrack.map((c) => c.sourceIn + c.duration), ...words.map((w) => w.end));
+  const manualCuts = arr(seq.manualCuts).map(v1Range).filter(Boolean);
+
+  // What 1.x played: the segment timeline, or the keep ranges.
+  const segmentBased = clips.some((c) => c.isGap) || (videoTrack.length > 1 && rawWords.every((w) => !w.isCut) && manualCuts.length === 0);
+  const omap = v1OutputMap(clips);
+  let keeps, total, remap, unmapOut;
+  if (segmentBased) {
+    keeps = omap.keepRanges;
+    total = omap.duration;
+    remap = (t) => omap.out(t);
+    unmapOut = (o) => omap.src(o);
+  } else {
+    keeps = v1KeepRangesForPlan(rawWords, clips, manualCuts, duration);
+    const played = keeps.length ? keeps : [[0, duration]];
+    total = played.reduce((n, r) => n + (r[1] - r[0]), 0);
+    remap = (t) => v1Remap(t, keeps);
+    unmapOut = (o) => v1Unmap(o, played);
+  }
+
+  // The edit as v2 cuts, or as segments when it can't be one.
+  const cuts = [];
+  let range = null, segments = null;
+  const addCut = (start, end, kind) => cuts.push({ id: `c${cuts.length + 1}`, start: round6(start), end: round6(end), kind });
+  const windowsToCuts = (ws) => {
+    range = { start: round6(ws[0][0]), end: round6(ws[ws.length - 1][1]) };
+    for (let i = 1; i < ws.length; i++) if (ws[i][0] - ws[i - 1][1] > 1e-6) addCut(ws[i - 1][1], ws[i][0], 'manual');
+  };
+  if (segmentBased) {
+    const ws = omap.segs.map((sg) => [sg.sourceIn, sg.sourceIn + sg.duration]);
+    if (ws.length && !omap.segs.some((sg) => sg.isGap) && inSourceOrder(ws)) windowsToCuts(ws);
+    else if (ws.length) segments = omap.segs.map((sg) => compact({ id: sg.id, sourceIn: round6(sg.sourceIn), start: round6(sg.outStart), end: round6(sg.outStart + sg.duration), isGap: sg.isGap || undefined, track: 0 }));
+  } else {
+    for (const [a, b] of manualCuts) addCut(a, b, 'manual');
+    const ws = realVideo.map((c) => [c.sourceIn, c.sourceIn + c.duration]);
+    if (ws.length === 1) {
+      if (realVideo[0].sourceIn > 0 || realVideo[0].duration < duration - 0.01) range = { start: round6(ws[0][0]), end: round6(ws[0][1]) };
+    } else if (ws.length > 1) {
+      if (inSourceOrder(ws)) windowsToCuts(ws);
+      else {
+        let at = 0;
+        segments = keeps.map((r, i) => { const s = { id: `seg${i + 1}`, sourceIn: round6(r[0]), start: round6(at), end: round6(at + r[1] - r[0]), track: 0 }; at += r[1] - r[0]; return s; });
+      }
+    }
+  }
+
+  // Camera, frame and the 1.x output frame size (for the PiP conversion).
+  const meta = isObj(seq.recordingMeta) ? seq.recordingMeta : {};
+  const screenSize = swiftSize(meta.screenSize);
+  const hasScreenSize = screenSize.width > 0 && screenSize.height > 0;
+  const aspect = frame.aspect === 'vertical9x16' ? '9:16' : frame.aspect === 'square1x1' ? '1:1' : hasScreenSize ? normAspect(screenSize.width / screenSize.height) : '16:9';
+  const [W, H] = frame.aspect === 'vertical9x16' ? [9, 16] : frame.aspect === 'square1x1' ? [1, 1] : hasScreenSize ? [screenSize.width, screenSize.height] : [16, 9];
+  const m = Math.min(W, H);
+  const cam = isObj(seq.camera) ? seq.camera : null;
+  const camAsset = cam ? asset(cam.assetID) : undefined;
+  const layout = { ...d.layout, mode: 'screen', mirror: false, fit: 'cover' };
+  if (camAsset) {
+    const split = V1_SPLITS.has(cam.layout);
+    layout.mode = cam.enabled === false ? 'screen' : split ? 'split' : 'pip';
+    layout.corner = has(V1_CORNERS, cam.position) ? V1_CORNERS[cam.position] : 'br';
+    layout.size = clamp(round6(((toNum(cam.scale) ?? 0.26) * H) / m), 0.08, 0.5);
+    layout.shape = cam.rounded === false ? 'square' : 'rounded';
+    layout.split = clamp(clamp(toNum(cam.splitRatio) ?? 0.5, 0.2, 0.8), 0.25, 0.7);
+    layout.margin = round6(Math.max(0, ((toNum(cam.margin) ?? 0.04) * W) / m));
+  }
+
+  // Zooms, as 1.x placed them (output time), written back in source time.
+  const splitShown = layout.mode === 'split';
+  const zoomIn = arr(seq.zooms).filter(isObj).map((z, i) => {
+    let start, end;
+    const s = toNum(z.startTime);
+    if (s !== undefined) { start = s; end = toNum(z.endTime) ?? s + 2; } else {
+      start = toNum(z.time) ?? 0;
+      end = start + Math.max(1, toNum(z.holdDuration) ?? 1.2);
+    }
+    const f = point(z.focus) || {};
+    return { id: str(z.id) ?? `z${i + 1}`, start, end, x: f.x ?? 0.5, y: f.y ?? 0.5, style: has(V1_ZOOM_SCALE, z.style) ? z.style : 'standard' };
+  });
+  const placed = zoomIn.map((z) => {
+    const s = remap(z.start);
+    if (s === null) return null;
+    const e = remap(z.end) ?? total;
+    return e > s + 0.05 ? { z, s, e } : null;
+  }).filter(Boolean).sort((a, b) => a.s - b.s);
+  const zooms = [];
+  let lastEnd = 0;
+  for (const p of placed) {
+    if (!(Math.max(lastEnd, p.s - V1_ZOOM_RAMP) < p.s)) continue; // overlaps the previous zoom: 1.x skipped it
+    lastEnd = Math.min(total, p.e + V1_ZOOM_RAMP);
+    if (splitShown) continue;
+    const ramp = p.z.style === 'punchIn' ? 0 : V1_ZOOM_RAMP;
+    zooms.push({
+      id: p.z.id,
+      start: round6(Math.max(0, p.z.start - ramp)),
+      end: round6(duration > 0 ? Math.min(duration, p.z.end + ramp) : p.z.end + ramp),
+      scale: V1_ZOOM_SCALE[p.z.style],
+      x: round6(clamp(p.z.x, 0, 1)),
+      y: round6(clamp(p.z.y, 0, 1)),
+      ramp,
+    });
+  }
+
+  // Captions (cues back to source time).
+  const cap = isObj(seq.captions) ? seq.captions : {};
+  const pos = toNum(cap.position) ?? 0.12;
+  const captions = {
+    enabled: cap.enabled === true,
+    preset: has(V1_CAPTION_PRESETS, cap.preset) ? V1_CAPTION_PRESETS[cap.preset] : 'bold',
+    position: pos >= 0.6 ? 'top' : pos >= 0.3 ? 'middle' : 'bottom',
+    size: clamp(toNum(cap.fontScale) ?? 1, 0.4, 2),
+    color: d.captions.color,
+    uppercase: null,
+    fillChoice: V1_FILLS[clamp(int(cap.fillChoice) ?? 0, 0, V1_FILLS.length - 1)],
+    boxed: cap.boxed === true,
+  };
+  if (!segments && !shift) {
+    const mapped = arr(cap.cues).filter(isObj).map((c) => {
+      const a = toNum(c.start), b = toNum(c.end);
+      if (a === undefined || b === undefined) return null;
+      const s = unmapOut(a), e = unmapOut(b);
+      return s !== null && e !== null && e > s ? { start: round6(s), end: round6(e), text: typeof c.text === 'string' ? c.text : '' } : null;
+    }).filter(Boolean);
+    if (mapped.length) captions.cues = mapped;
+  }
+
+  // Style.
+  const st = isObj(seq.staging) ? seq.staging : {};
+  const hex = typeof st.backgroundHex === 'string' ? st.backgroundHex : undefined;
+  const kind = ['none', 'color', 'gradient', 'image'].includes(st.backgroundKind) ? st.backgroundKind : hex !== undefined ? 'color' : 'none';
+  const style = { bg: 'solid', solid: '#000000' };
+  if (kind === 'color') style.solid = hex6(hex) ?? '#000000';
+  else if (kind === 'gradient') { style.bg = has(V1_GRADIENTS, st.gradientID) ? V1_GRADIENTS[st.gradientID] : 'tide'; delete style.solid; }
+  else if (kind === 'image' && urlPath(st.imagePath)) { style.bg = 'image'; style.imagePath = urlPath(st.imagePath); delete style.solid; }
+  style.padding = round6(clamp(clamp(toNum(st.padding) ?? 0, 0, 0.45), 0, 0.2));
+  style.radius = 0;
+  style.shadow = 0;
+  const sc = toNum(st.scale) ?? 1, ox = toNum(st.offsetX) ?? 0, oy = toNum(st.offsetY) ?? 0;
+  if (sc !== 1) style.scale = Math.max(0.1, sc);
+  if (ox !== 0) style.offsetX = ox;
+  if (oy !== 0) style.offsetY = oy;
+
+  // Cursor.
+  const cur = isObj(seq.cursor) ? seq.cursor : {};
+  const cursor = { smoothing: toNum(cur.smoothing) ?? 0.6, showClicks: bool(cur.showClicks) ?? true, motionBlur: bool(cur.motionBlur) ?? false, hideHardwareCursor: bool(cur.hideHardwareCursor) ?? true };
+  const pts = (list, clicksOnly) => arr(list).filter(isObj).filter((p) => !clicksOnly || (int(p.button) ?? 0) === 0)
+    .map((p) => ({ t: toNum(p.t), x: toNum(p.x), y: toNum(p.y) })).filter((p) => p.t !== undefined && p.x !== undefined && p.y !== undefined);
+  const samples = inlineCursorSamples(pts(meta.cursorSamples, false), pts(meta.clicks, true));
+  if (samples.length) { cursor.samples = samples; cursor.source = 'macos-v1'; }
+
+  // Sources and meta.
+  const source = (a, fallback) => compact({ path: urlPath(a?.urlPath) ?? fallback, name: str(a?.name), duration: toNum(a?.duration) > 0 ? toNum(a.duration) : undefined, hasAudio: bool(a?.hasAudio) });
+  const sources = { screen: source(screenAsset, 'media/screen'), camera: camAsset ? source(camAsset, 'media/camera') : null };
+  if (camAsset) sources.cameraOffset = 0;
+
+  const plan = { version: PLAN_VERSION, app: { name: 'Slipstream for macOS', surface: 'macos', version: '1.0' } };
+  const pname = isProject ? str(j.name) : undefined, sname = str(seq.name);
+  const baseId = isProject ? str(j.id) : str(seq.id);
+  const planMeta = compact({
+    id: baseId !== undefined && index > 0 ? `${baseId}-${index + 1}` : baseId,
+    name: seqs.length > 1 ? [pname, sname].filter(Boolean).join(' – ') || undefined : pname ?? sname,
+    created: toTimestamp(isProject ? j.createdAt : undefined),
+    updated: toTimestamp(isProject ? j.modifiedAt : undefined),
+  });
+  if (Object.keys(planMeta).length) plan.meta = planMeta;
+  plan.sources = sources;
+  plan.words = words;
+  plan.cuts = cuts;
+  plan.range = range;
+  plan.zooms = zooms;
+  plan.frame = { aspect };
+  plan.layout = layout;
+  plan.style = style;
+  plan.captions = captions;
+  plan.cursor = cursor;
+  const a = isObj(seq.audio) ? seq.audio : null;
+  const audio = a ? compact({ fadeIn: toNum(a.fadeIn) > 0 ? toNum(a.fadeIn) : undefined, fadeOut: toNum(a.fadeOut) > 0 ? toNum(a.fadeOut) : undefined }) : {};
+  if (Object.keys(audio).length) plan.audio = audio;
+  if (segments) plan.segments = segments;
+
+  const gain = toNum(a?.gain) ?? 1;
+  plan.legacyV1 = compact({
+    origin: 'macos-v1',
+    sequence: index,
+    sequenceCount: seqs.length,
+    sequenceId: str(seq.id),
+    sequenceName: sname,
+    sequences: seqs.length > 1 ? macOSV1Sequences(j) : undefined,
+    shortOffset: shift || undefined,
+    cameraLayout: camAsset && V1_SPLITS.has(cam.layout) ? cam.layout : undefined,
+    cameraPosition: camAsset && (cam.position === 'bottomCenter' || cam.position === 'topCenter') ? cam.position : undefined,
+    reframe: frame.reframe === 'smartTrack' ? 'smartTrack' : undefined,
+    audioGain: gain !== 1 ? gain : undefined,
+    cursorSize: (toNum(cur.size) ?? 1) !== 1 ? toNum(cur.size) : undefined,
+    stylePreset: str(seq.stylePreset?.name),
+    overlays: arr(seq.overlays).length || undefined,
+    audioClips: clips.filter((c) => c.track === 'audio').length || undefined,
+    splitZooms: splitShown && placed.length ? placed.length : undefined,
+  });
+  return plan;
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// ReelMaker prototype `.reelproj` -> v2 (verified: v1/reelmaker-desktop/src/App.tsx onSaveProject/onLoadProject)
+//
+// 29 flat keys, no edit plan: videoPath, outputPath, transcriptText, transcriptData (whisper segments[] with
+// word_timings[{ word, start_time, end_time }]), tokens [{ id, start, end, text }], editState { deleted_ids, undo,
+// redo } (or older deletedTokenIds { id: true }), autoRemoveFillers, fillerThreshold, removeSilence,
+// silenceThresholdDb, silenceMinSec, silenceKeepRanges, silenceRanges, keptSilenceKeys, captionsMode, captionFontSize,
+// captionMarginV, captionPreset, captionEmphasis, exportProfile, exportMode, encoder, aspect, reframeAnchor, nleFps,
+// brollImagePath, brollStart, brollEnd, assetsDir. Missing keys take the prototype's load defaults.
+// - Words: `tokens` (string ids, end > start), else built from transcriptData (id `${segment.id}:${i}`); deleted =
+//   editState.deleted_ids, else the keys of deletedTokenIds. They stay deleted (2.0's pause removal applies).
+// - Silence (Boolean(removeSilence), so missing = off): only when silenceKeepRanges is set, the keep is
+//   merge(silenceKeepRanges ∪ the silenceRanges whose `${a.toFixed(3)}-${b.toFixed(3)}` key is in keptSilenceKeys,
+//   0.001), and everything outside it up to the end of the last kept range or detected silence is a 'silence' cut.
+// - The B-roll image (brollImagePath, brollStart 0, brollEnd 2, OUTPUT seconds, shown when end > start) becomes one
+//   full-frame image overlay, its times mapped back to source time through the prototype's keep ranges (conform_v2:
+//   [0, ∞) minus deleted words, ∩ the silence keep, merged within 0.001, pieces under 0.02 s dropped).
+// - captionsMode burn → captions on; captionPreset (minimal) kept, bounce/meme → bold; size = captionFontSize / 54
+//   (2 decimals); aspect; reframeAnchor left/right/auto → frame.reframe; a non-empty cameraPath → the camera.
+// - The prototype drew the video as is: solid black, no padding, corners or shadow; the frame is filled.
+// - Export and UI settings are kept under `legacyV1` with their load defaults.
+
+const REEL_PRESETS = { bounce: 'bold', meme: 'bold' };
+
+/** JavaScript's merge of [a, b] pairs (App.tsx mergeRanges): drops empty ranges, joins within `gap`. */
+function jsMergeRanges(ranges, gap) {
+  const xs = ranges.filter((r) => r[1] > r[0]).map((r) => [r[0], r[1]]).sort((p, q) => p[0] - q[0]);
+  const out = [];
+  for (const [s, e] of xs) {
+    const last = out[out.length - 1];
+    if (last && s <= last[1] + gap) last[1] = Math.max(last[1], e);
+    else out.push([s, e]);
+  }
+  return out;
+}
+
+/** [s, e] pairs from a JSON list (numbers only). */
+const pairs = (list) => arr(list).filter((r) => Array.isArray(r) && r.length >= 2 && typeof r[0] === 'number' && typeof r[1] === 'number').map((r) => [r[0], r[1]]);
+
+/** The `.reelproj` key of a silence range (App.tsx rangeKey). */
+export const reelSilenceKey = (r) => `${r[0].toFixed(3)}-${r[1].toFixed(3)}`;
+
+/** ReelMaker prototype `.reelproj` -> v2, by the rules above. */
+export function fromReelproj(json) {
+  if (!isObj(json)) throw new TypeError('fromReelproj: expected a .reelproj object');
+  const j = clone(json), d = defaultEdit();
+  const num = (v, dflt) => Number(v ?? dflt);
+
+  let tokens;
+  if (Array.isArray(j.tokens)) {
+    tokens = j.tokens.map((t) => ({ id: String(t?.id ?? ''), start: Number(t?.start ?? 0), end: Number(t?.end ?? 0), text: String(t?.text ?? '') }))
+      .filter((t) => t.id && t.end > t.start);
+  } else if (j.transcriptData) {
+    tokens = [];
+    for (const seg of arr(j.transcriptData?.segments)) {
+      const sid = seg?.id;
+      const ws = arr(seg?.word_timings);
+      for (let i = 0; i < ws.length; i++) {
+        const start = Number(ws[i]?.start_time ?? 0);
+        const end = Number(ws[i]?.end_time ?? start);
+        if (!(end > start)) continue;
+        tokens.push({ id: `${sid}:${i}`, start, end, text: String(ws[i]?.word ?? '') });
+      }
+    }
+  } else tokens = [];
+
+  let deletedIds = [];
+  if (isObj(j.editState)) deletedIds = arr(j.editState.deleted_ids).map(String);
+  else if (isObj(j.deletedTokenIds)) deletedIds = Object.keys(j.deletedTokenIds);
+  const deleted = new Set(deletedIds);
+  const words = tokens.map((t) => ({ id: t.id, text: t.text, start: t.start, end: t.end, deleted: deleted.has(t.id) }));
+
+  // Silence removal.
+  const removeSilence = Boolean(j.removeSilence);
+  const silenceRanges = j.silenceRanges ? pairs(j.silenceRanges) : null;
+  const keptKeys = isObj(j.keptSilenceKeys) ? j.keptSilenceKeys : {};
+  let silenceKeep = null;
+  if (removeSilence && j.silenceKeepRanges) {
+    const kept = (silenceRanges || []).filter((r) => keptKeys[reelSilenceKey(r)]);
+    silenceKeep = jsMergeRanges([...pairs(j.silenceKeepRanges), ...kept], 0.001);
+    if (!silenceKeep.length) silenceKeep = null; // an empty keep would cut everything: treat it as not analysed
+  }
+  const cuts = [];
+  if (silenceKeep) {
+    const end = Math.max(silenceKeep[silenceKeep.length - 1][1], ...(silenceRanges || []).map((r) => r[1]));
+    let t = 0;
+    for (const [a, b] of [...silenceKeep, [end, end]]) {
+      if (a - t > 0.001) cuts.push({ id: `c${cuts.length + 1}`, start: round6(t), end: round6(a), kind: 'silence' });
+      t = Math.max(t, b);
+    }
+  }
+
+  // The prototype's keep ranges (conform_v2 with no padding), for its OUTPUT-time overlay.
+  const removed = jsMergeRanges(tokens.filter((t) => deleted.has(t.id)).map((t) => [Math.max(0, t.start), t.end]), 0.001);
+  let keep = [];
+  let t0 = 0;
+  for (const [a, b] of removed) { if (a > t0) keep.push([t0, a]); t0 = Math.max(t0, b); }
+  if (t0 < UNKNOWN_DURATION_END) keep.push([t0, UNKNOWN_DURATION_END]);
+  if (silenceKeep) {
+    const both = [];
+    for (const [a, b] of keep) for (const [c, e] of silenceKeep) { const lo = Math.max(a, c), hi = Math.min(b, e); if (hi > lo) both.push([lo, hi]); }
+    keep = both;
+  }
+  keep = jsMergeRanges(keep, 0.001).filter((r) => r[1] - r[0] >= 0.02);
+
+  const plan = { version: PLAN_VERSION, app: { name: 'ReelMaker (prototype)', surface: 'tauri', version: '0.x' } };
+  const videoPath = typeof j.videoPath === 'string' && j.videoPath ? j.videoPath : undefined;
+  const cameraPath = typeof j.cameraPath === 'string' && j.cameraPath ? j.cameraPath : undefined;
+  plan.sources = { screen: { path: videoPath ?? 'media/screen' }, camera: cameraPath ? { path: cameraPath } : null };
+  if (cameraPath) plan.sources.cameraOffset = 0;
+  plan.words = words;
+  plan.cuts = cuts;
+  plan.range = null;
+  plan.zooms = [];
+  const anchor = String(j.reframeAnchor ?? 'center');
+  plan.frame = { aspect: normAspect(String(j.aspect ?? 'source')) };
+  if (anchor === 'left' || anchor === 'right' || anchor === 'auto') plan.frame.reframe = { enabled: true, anchor };
+  plan.layout = { ...d.layout, mode: cameraPath ? 'pip' : 'screen', mirror: false, fit: 'cover' };
+  plan.style = { bg: 'solid', solid: '#000000', padding: 0, radius: 0, shadow: 0 };
+  const captionsMode = String(j.captionsMode ?? 'burn');
+  const preset = String(j.captionPreset ?? 'minimal');
+  const fontSize = num(j.captionFontSize, 54);
+  plan.captions = {
+    ...d.captions,
+    enabled: captionsMode === 'burn',
+    preset: PRESETS.has(preset) ? preset : has(REEL_PRESETS, preset) ? REEL_PRESETS[preset] : 'studio',
+    size: Number.isFinite(fontSize) && fontSize > 0 ? Math.round((fontSize / 54) * 100) / 100 : 1,
+  };
+  const brollPath = typeof j.brollImagePath === 'string' ? j.brollImagePath : '';
+  const bStart = num(j.brollStart, 0), bEnd = num(j.brollEnd, 2);
+  if (brollPath && bEnd > bStart) {
+    plan.broll = [{ id: 'broll-1', assetId: 'broll-1', path: brollPath, kind: 'image', area: 'full', fit: 'cover', start: round6(v1Unmap(bStart, keep)), end: round6(v1Unmap(bEnd, keep)) }];
+  }
+  plan.legacyV1 = {
+    origin: 'reelproj',
+    outputPath: String(j.outputPath ?? ''),
+    exportProfile: String(j.exportProfile ?? 'custom'),
+    exportMode: String(j.exportMode ?? 'fast'),
+    encoder: String(j.encoder ?? 'auto'),
+    nleFps: num(j.nleFps, 30),
+    aspect: String(j.aspect ?? 'source'),
+    reframeAnchor: anchor,
+    captionsMode,
+    captionPreset: preset,
+    captionFontSize: fontSize,
+    captionMarginV: num(j.captionMarginV, 60),
+    captionEmphasis: Boolean(j.captionEmphasis ?? true),
+    autoRemoveFillers: Boolean(j.autoRemoveFillers),
+    fillerThreshold: num(j.fillerThreshold, 0.8),
+    removeSilence,
+    silenceThresholdDb: num(j.silenceThresholdDb, -35),
+    silenceMinSec: num(j.silenceMinSec, 0.35),
+    assetsDir: String(j.assetsDir ?? ''),
+  };
+  return plan;
+}
+
+// ---------------------------------------------------------------------------------------------------------
 // Detection, migration, validation
 
-/** 'v2' | 'web-project' | 'web-edit' | 'engine-v1' | 'swift-v1' | 'unknown' */
+/** 'v2' | 'web-project' | 'web-edit' | 'reelproj' | 'macos-v1' | 'macos-v1-plan' | 'engine-v1' | 'swift-v1' | 'unknown' */
 export function detectPlanShape(json) {
   if (!isObj(json)) return 'unknown';
   if (Number(json.version) === PLAN_VERSION && isObj(json.sources)) return 'v2';
   if (isObj(json.edit) && Array.isArray(json.edit.words)) return 'web-project';
   if (isObj(json.plan) && Number(json.plan.version) === PLAN_VERSION) return 'web-project';
   if (Array.isArray(json.words) && typeof json.aspect === 'string' && isObj(json.layout) && isObj(json.style)) return 'web-edit';
+  // Verified 1.x desktop shapes before the older guesses.
+  if (!('editPlan' in json) && !('edit_plan' in json) && 'videoPath' in json
+    && (Array.isArray(json.tokens) || isObj(json.transcriptData) || isObj(json.editState) || isObj(json.deletedTokenIds))) return 'reelproj';
+  if (Array.isArray(json.sequences) && (Array.isArray(json.bin) || 'createdAt' in json)) return 'macos-v1';
+  if (!isObj(json.source) && isObj(json.staging) && (Array.isArray(json.keepRanges) || Array.isArray(json.clips) || isObj(json.recordingMeta) || isObj(json.stylePreset))) return 'macos-v1-plan';
   if ((isObj(json.source) && 'screenPath' in json.source) || isObj(json.frame?.staging) || Array.isArray(json.manualCuts) || Array.isArray(json.focusKeyframes)) return 'engine-v1';
   const swiftKeys = ['screenURL', 'cameraURL', 'screenPath', 'captionTrack', 'cameraLayout', 'transcript', 'createdAt', 'modifiedAt', 'razorCuts', 'silenceCuts', 'background', 'clips', 'zoomRegions', 'aspectRatio'];
   if (swiftKeys.some((k) => k in json)) return 'swift-v1';
@@ -865,14 +1497,17 @@ export function detectPlanShape(json) {
   return 'unknown';
 }
 
-/** Any known project/plan shape -> v2. Throws on input it can't recognise. */
-export function migratePlan(json) {
+/** Any known project/plan shape -> v2. Throws on input it can't recognise. opts.sequence: see fromMacOSV1. */
+export function migratePlan(json, opts = {}) {
   switch (detectPlanShape(json)) {
     case 'v2': return clone(json);
     case 'web-project': return isObj(json.edit) ? toV2(json.edit, json.media, json) : clone(json.plan);
     case 'web-edit': return toV2(json);
     case 'engine-v1': return fromEngineV1(json);
-    case 'swift-v1': return fromSwiftV1(json);
+    case 'reelproj': return fromReelproj(json);
+    case 'macos-v1':
+    case 'macos-v1-plan': return fromMacOSV1(json, opts);
+    case 'swift-v1': return fromSwiftGuess(json);
     default: throw new TypeError('migratePlan: unrecognised project shape');
   }
 }

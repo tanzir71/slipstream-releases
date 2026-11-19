@@ -9,9 +9,15 @@ import { getMedia } from './store.js';
 export const APP_INFO = { name: 'Slipstream Web', surface: 'web', version: '2.0.0' };
 export { BUNDLE_EXT, BRAND_EXT, BundleError };
 
-/** The v2 plan mirror saved with every project (C-01): what desktop apps and the MCP server read. */
+/**
+ * The v2 plan mirror saved with every project (C-01): what desktop apps and the MCP server read. A desktop project
+ * edited from a preview copy describes its original recording (`media.original`), which is what bundles carry and
+ * the engine exports.
+ */
 export function planFor(project, edit = project.edit) {
-  return toV2(edit, project.media, { name: project.name, created: project.created, updated: Date.now() });
+  const o = project.media?.original;
+  const media = o?.width && o?.height ? { ...project.media, width: o.width, height: o.height } : project.media;
+  return toV2(edit, media, { name: project.name, created: project.created, updated: Date.now() });
 }
 
 async function dataUrlToBlob(url) {
@@ -21,9 +27,13 @@ async function dataUrlToBlob(url) {
 
 /** Build a `.slipstream` bundle for a stored project. planOnly keeps media as references (small file). */
 export async function exportBundle(project, { planOnly = false, onProgress } = {}) {
+  // Recordings edited from a preview copy (desktop app) travel as their originals, never the 1280-wide copy.
+  const m = project.media;
+  const screenRef = m.original ? { key: 'original', type: m.original.type, name: m.original.name } : { key: 'screen', type: m.screenType, name: m.screenName };
+  const cameraRef = m.cameraOriginal ? { key: 'camera-original', type: m.cameraOriginal.type, name: m.cameraOriginal.name } : { key: 'camera', type: m.cameraType, name: m.cameraName };
   const [screen, camera] = await Promise.all([
-    getMedia(`${project.id}:screen`, project.media.screenType),
-    project.media.camera ? getMedia(`${project.id}:camera`, project.media.cameraType) : null,
+    getMedia(`${project.id}:${screenRef.key}`, screenRef.type),
+    m.camera ? getMedia(`${project.id}:${cameraRef.key}`, cameraRef.type) : null,
   ]);
   if (!screen) throw new Error('The media for this project is missing from this browser.');
   // Stored media is named 'screen'/'camera' internally; bundles and plan-only refs use the original file name.
@@ -36,8 +46,10 @@ export async function exportBundle(project, { planOnly = false, onProgress } = {
   if (!planOnly) {
     for (const a of project.media.angles || []) {
       if (a.id === 'camera') continue;
-      const blob = await getMedia(`${project.id}:angle-${a.id}`, a.type || '');
-      if (blob) assets.push({ key: `angle-${a.id}`, blob, name: a.name });
+      const blob = a.original
+        ? await getMedia(`${project.id}:angle-${a.id}-original`, a.original.type || '')
+        : await getMedia(`${project.id}:angle-${a.id}`, a.type || '');
+      if (blob) assets.push({ key: `angle-${a.id}`, blob, name: a.original?.name || a.name });
     }
     for (const b of project.edit.broll || []) {
       const blob = await getMedia(`${project.id}:broll-${b.id}`, b.type || '');
@@ -60,7 +72,7 @@ export async function exportBundle(project, { planOnly = false, onProgress } = {
   }
   return packBundle({
     plan,
-    media: { screen: named(screen, project.media.screenName, project.media.screenType), camera: named(camera, project.media.cameraName, project.media.cameraType) },
+    media: { screen: named(screen, screenRef.name, screenRef.type), camera: named(camera, cameraRef.name, cameraRef.type) },
     assets,
     thumb: await dataUrlToBlob(project.thumb),
     app: APP_INFO,

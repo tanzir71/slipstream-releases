@@ -34,6 +34,7 @@ import { exportVideo, downloadBlob, pickCodecs, primeExportAudio } from './expor
 import { saveProject, putMedia, getMedia, getSetting, setSetting } from './store.js';
 import { planFor, exportBrand, readBrand } from './projects-io.js';
 import desktop from './desktop-bridge.js';
+import { desktopPreview, originalRecord } from './preview-copy.js';
 
 const LANGS = [['auto', 'Detect language'], ['en', 'English'], ['es', 'Spanish'], ['fr', 'French'], ['de', 'German'], ['pt', 'Portuguese'], ['it', 'Italian'], ['nl', 'Dutch'], ['hi', 'Hindi'], ['bn', 'Bengali'], ['ar', 'Arabic'], ['ja', 'Japanese'], ['ko', 'Korean'], ['zh', 'Chinese'], ['ru', 'Russian'], ['tr', 'Turkish'], ['id', 'Indonesian']];
 
@@ -1140,6 +1141,11 @@ export async function openEditor(root, project, media, { onExit }) {
   /** Batch export (A-04): each clip as a 9:16 reel with captions, one after another, all on this device. */
   async function exportReels(list) {
     if (!list.length) return;
+    // A proxied import (desktop app) is only exported from its original, through the engine's Export dialog.
+    if (desktop.available && hasPreviewCopies()) {
+      toast('This video is edited from a preview copy. Set the clip range and use Export, which renders the original with the desktop engine.', 'info', 8000);
+      return;
+    }
     pause();
     const ctrl = new AbortController();
     const bar = h('div.bar', h('i'));
@@ -1558,8 +1564,14 @@ export async function openEditor(root, project, media, { onExit }) {
     save();
   }
   const camerasForExport = () => S.angles.map((a) => ({ id: a.id, blob: a.blob, offset: a.offset }));
+  /**
+   * Desktop app: recordings the webview couldn't decode are edited from preview copies (main.js desktopPreview);
+   * their originals sit beside them (`original`, `camera-original`, `angle-<id>-original`) and only the engine
+   * exports them.
+   */
+  const hasPreviewCopies = () => !!(project.media.original || project.media.cameraOriginal || (project.media.angles || []).some((a) => a.original));
   function saveAngles() {
-    project.media.angles = S.angles.map((a) => ({ id: a.id, name: a.name, offset: a.offset, ...(a.speaker ? { speaker: a.speaker } : {}), ...(a.type ? { type: a.type } : {}) }));
+    project.media.angles = S.angles.map((a) => ({ id: a.id, name: a.name, offset: a.offset, ...(a.speaker ? { speaker: a.speaker } : {}), ...(a.type ? { type: a.type } : {}), ...(a.original ? { original: a.original } : {}) }));
     save();
   }
   async function loadAngles() {
@@ -1598,10 +1610,15 @@ export async function openEditor(root, project, media, { onExit }) {
     const btn = h('button.btn.small', { onclick: () => input.click() }, icon('camera', 13), 'Add camera recording');
     return h('div.row', btn, input);
   }
-  async function addCamera(file, btn) {
+  async function addCamera(picked, btn) {
     btn.disabled = true;
     btn.textContent = 'Reading camera…';
     try {
+      // Desktop app: a camera file this webview can't decode is edited from a preview copy; the original exports.
+      const prepared = await desktopPreview(picked, null, 'camera recording');
+      if (!prepared) { btn.disabled = false; btn.replaceChildren(icon('camera', 13), 'Add camera recording'); return; }
+      const file = prepared.preview;
+      const original = prepared.original ? originalRecord(prepared.original) : null;
       const info = await probe(file);
       if (!info.hasVideo) throw new Error('That file has no video.');
       let offset = 0, note = 'Placed at the start (no audio to match).';
@@ -1617,12 +1634,13 @@ export async function openEditor(root, project, media, { onExit }) {
       if (S.camBlob) {
         // Already have a camera: add this one as another angle (S-03) without reopening.
         const id = uid('ang');
+        if (original) await putMedia(`${project.id}:angle-${id}-original`, picked);
         await putMedia(`${project.id}:angle-${id}`, file);
         const el = h('video', { src: URL.createObjectURL(file), preload: 'auto', playsInline: true, muted: true });
         el.addEventListener('seeked', () => { S.dirty = true; });
         el.addEventListener('loadeddata', () => { S.dirty = true; });
         mediaBox.append(el);
-        S.angles.push({ id, name: file.name.replace(/\.[^.]+$/, '') || `Angle ${S.angles.length + 1}`, offset, el, blob: file, type: file.type });
+        S.angles.push({ id, name: picked.name.replace(/\.[^.]+$/, '') || `Angle ${S.angles.length + 1}`, offset, el, blob: file, type: file.type, ...(original ? { original } : {}) });
         saveAngles();
         toast(`${note} Added as angle ${S.angles.length}.`, 'ok', 5000);
         btn.disabled = false;
@@ -1631,8 +1649,10 @@ export async function openEditor(root, project, media, { onExit }) {
         renderRight();
         return;
       }
+      if (original) await putMedia(`${project.id}:camera-original`, picked);
       const stored = await putMedia(`${project.id}:camera`, file);
       Object.assign(project.media, { camera: true, cameraOffset: offset, cameraType: file.type || stored.type || '', cameraName: file.name || 'camera' });
+      if (original) project.media.cameraOriginal = original; else delete project.media.cameraOriginal;
       project.edit = S.edit;
       if (S.edit.layout.mode === 'screen') S.edit.layout.mode = 'pip';
       await saveNow();
@@ -2372,9 +2392,25 @@ export async function openEditor(root, project, media, { onExit }) {
     // B-roll, camera angles, intro/outro and music. It's the default where the webview can't encode quickly.
     const engineRow = h('div.stack');
     opts.engine = false;
+    // A video imported through a preview copy (this webview can't decode the original) is only ever exported from
+    // the original, by the engine: the in-app exporter would render the 1280-wide preview.
+    const proxied = !!(desktop.available && hasPreviewCopies());
+    if (proxied) {
+      opts.engine = true;
+      go.disabled = true;
+      fill(engineRow, h('p.muted.small', 'Checking the desktop engine…'));
+    }
     if (desktop.available) {
       desktop.info().then((i) => {
-        if (!i?.engine?.available) return;
+        if (!i?.engine?.available) {
+          if (proxied) fill(engineRow, h('p.warn', 'This video is edited from a preview copy, so it exports through the desktop engine, which isn’t available. Reinstall Slipstream to export it.'));
+          return;
+        }
+        go.disabled = false;
+        if (proxied) {
+          fill(engineRow, h('p.muted.small', 'Renders the original recording at full quality with the desktop engine (the editor shows a smaller preview copy).'));
+          return;
+        }
         opts.engine = !webcodecsVideo() || S.edit.audio?.enhance === true;
         fill(engineRow,
           toggle('Render with the desktop engine (hardware encoder)', opts.engine, (v) => { opts.engine = v; }),
@@ -2398,7 +2434,7 @@ export async function openEditor(root, project, media, { onExit }) {
     const m = modal('Export', body, { onClose: () => ctrl?.abort() });
 
     async function run() {
-      if (opts.engine) return runEngine();
+      if (opts.engine || proxied) return runEngine();
       const { width, height } = outputSize(S.edit.aspect, opts.res);
       // The real-time path (W-06) plays audio, which needs this click's user activation.
       const audioContext = !webcodecsVideo() && (S.hasAudio || (S.edit.music && S.musicBlob)) ? primeExportAudio() : null;
@@ -2452,8 +2488,24 @@ export async function openEditor(root, project, media, { onExit }) {
         if (plan.music && S.musicBlob) plan.music.path = await stage(S.musicBlob, 'music');
         const bump = bumpersFor(S.edit);
         for (const k of ['intro', 'outro']) if (plan.brand?.[k] && bump[k]) plan.brand[k] = { ...plan.brand[k], path: await stage(bump[k], k) };
-        for (const a of plan.sources?.angles || []) { const ang = S.angles.find((x) => x.id === a.id); if (ang?.blob) a.path = await stage(ang.blob, `angle-${a.id}`); }
-        const res = await desktop.render(plan, { name, width, height, fps: opts.fps, format: opts.format, quality: opts.quality, captions: opts.captions, media: { screen: namedMedia(S.screenBlob, 'screen'), camera: namedMedia(S.camBlob, 'camera') }, projectId: project.id, signal: ctrl.signal }, (p) => {
+        // Recordings edited from a preview copy render from their originals, never from the copy.
+        const originalOf = async (key, rec, what) => {
+          if (!rec) return null;
+          const blob = await getMedia(`${project.id}:${key}`, rec.type || '');
+          if (!blob) throw new Error(`the original ${what} is missing from this project, and its preview copy is too small to export`);
+          return blob;
+        };
+        for (const a of plan.sources?.angles || []) {
+          const ang = S.angles.find((x) => x.id === a.id);
+          const orig = await originalOf(`angle-${a.id}-original`, ang?.original, `camera angle “${ang?.name || a.id}”`);
+          if (orig) a.path = await stage(orig, `angle-${a.id}-original`);
+          else if (ang?.blob) a.path = await stage(ang.blob, `angle-${a.id}`);
+        }
+        const original = await originalOf('original', project.media.original, 'recording');
+        const camOriginal = S.camBlob ? await originalOf('camera-original', project.media.cameraOriginal, 'camera recording') : null;
+        const screenMedia = original ? namedMedia(original, 'original') : namedMedia(S.screenBlob, 'screen');
+        const camMedia = camOriginal ? namedMedia(camOriginal, 'camera-original') : namedMedia(S.camBlob, 'camera');
+        const res = await desktop.render(plan, { name, width, height, fps: opts.fps, format: opts.format, quality: opts.quality, captions: opts.captions, media: { screen: screenMedia, camera: camMedia }, projectId: project.id, signal: ctrl.signal }, (p) => {
           if (p?.done == null) return;
           bar.firstChild.style.width = `${Math.round(p.done * 100)}%`;
           label.textContent = `${p.stage === 'copy' ? 'Handing the recording to the engine' : 'Encoding'} · ${Math.round(p.done * 100)}%${p.eta != null ? ` · about ${Math.ceil(p.eta)}s left` : ''}`;
@@ -2471,7 +2523,7 @@ export async function openEditor(root, project, media, { onExit }) {
         if (/FFmpeg was not found/i.test(err.message)) { offerFfmpeg(); return; }
         body.replaceChildren(h('div.stack', h('p.warn', `The desktop engine couldn’t export: ${err.message}`),
           h('div.row', h('button.btn', { onclick: () => { m.close(); openExport(); } }, 'Try again'),
-            h('button.btn.primary', { onclick: () => { opts.engine = false; run(); } }, 'Export in the app instead'))));
+            proxied ? null : h('button.btn.primary', { onclick: () => { opts.engine = false; run(); } }, 'Export in the app instead'))));
       }
     }
 
@@ -2507,7 +2559,7 @@ export async function openEditor(root, project, media, { onExit }) {
         h('div.row',
           canDownload ? h('button.btn.primary', { onclick: () => install(false) }, icon('download', 15), `Download FFmpeg (${ff.sizeText || fmtBytes(ff.size || 0)})`) : null,
           h('button.btn', { onclick: () => install(true) }, 'Install from a file…'),
-          h('button.btn.ghost', { onclick: () => { opts.engine = false; run(); } }, 'Export in the app instead'))));
+          proxied ? null : h('button.btn.ghost', { onclick: () => { opts.engine = false; run(); } }, 'Export in the app instead'))));
     }
   }
   function field(label, control) { return h('div.field', h('span', label), control); }

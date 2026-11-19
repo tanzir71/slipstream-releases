@@ -8,6 +8,9 @@
 
 export const MIN_RANGE = 0.04; // ranges shorter than this are dropped (≈1 frame at 25fps)
 const WORD_PAD = 0.02;
+// Longest pause after a run of deleted words that the cut takes with it. Shorter gaps go completely, so speech
+// flows on; a longer silence (a demo on screen, a deliberate pause) keeps all but this much of itself.
+export const GAP_ABSORB = 1.0;
 
 // Hard fillers are safe to remove automatically. Soft fillers ("like", "you know") are only flagged.
 export const HARD_FILLERS = new Set(['um', 'umm', 'uh', 'uhh', 'uhm', 'erm', 'er', 'ah', 'ahh', 'hmm', 'hm', 'mm', 'mhm', 'eh']);
@@ -59,7 +62,7 @@ export function clampRange(r, duration) {
   return { start: Math.max(0, Math.min(duration, r.start)), end: Math.max(0, Math.min(duration, r.end)) };
 }
 
-/** Cut ranges created by deleted transcript words. Each run of deleted words also removes the gap after it. */
+/** Cut ranges created by deleted transcript words. Each run of deleted words also removes the gap after it, up to GAP_ABSORB. */
 export function wordCutRanges(words, duration = Infinity) {
   const cuts = [];
   let i = 0;
@@ -70,7 +73,7 @@ export function wordCutRanges(words, duration = Infinity) {
     const prev = words[i - 1];
     const next = words[j + 1];
     const start = Math.max(prev ? prev.end : 0, words[i].start - WORD_PAD);
-    const end = next ? Math.max(words[j].end, next.start - WORD_PAD) : Math.min(duration, words[j].end + 0.05);
+    const end = next ? Math.max(words[j].end, Math.min(next.start - WORD_PAD, words[j].end + GAP_ABSORB)) : Math.min(duration, words[j].end + 0.05);
     if (end - start > 0) cuts.push({ start, end, kind: 'words', from: i, to: j });
     i = j + 1;
   }

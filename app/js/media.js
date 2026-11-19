@@ -2,6 +2,7 @@
 import * as MB from '../vendor/mediabunny.min.mjs';
 import { dominantChange } from './autozoom.js';
 import { FORCE_COMPAT, canPlayElement, analyzeAudioCompat, thumbnailCompat, framesCompat } from './media-compat.js';
+import { ChunkQueue, clampPlanes, packPlanar } from './audio-mix.js';
 
 export { MB };
 
@@ -90,6 +91,91 @@ export async function analyzeAudio(blob, duration, onProgress = () => {}) {
     onProgress(1);
     return { peaks: peaks.subarray(0, Math.ceil(duration * PEAKS_PER_SEC)), pcm };
   } finally {
+    input.dispose?.();
+  }
+}
+
+/** Decoded planes of an AudioSample: { t, rate, n, planes } as audio-mix.js expects. */
+function planesOf(s) {
+  const planes = [];
+  for (let c = 0; c < s.numberOfChannels; c++) {
+    const p = new Float32Array(s.numberOfFrames);
+    s.copyTo(p, { planeIndex: c, format: 'f32-planar' });
+    planes.push(p);
+  }
+  return { t: s.timestamp, rate: s.sampleRate, n: s.numberOfFrames, planes };
+}
+
+/** A track decoded on demand, in time order, into a ChunkQueue. */
+function trackFeed(track) {
+  const it = new MB.AudioSampleSink(track).samples();
+  const q = new ChunkQueue();
+  return {
+    q,
+    async upTo(t) {
+      while (!q.done && q.end < t) {
+        const r = await it.next();
+        if (r.done) { q.done = true; break; }
+        q.push(planesOf(r.value));
+        r.value.close();
+      }
+    },
+    close() { it.return?.(); },
+  };
+}
+
+/**
+ * Files with more than one enabled audio track (Slipstream 1 for Mac and Slipstream 2 bundles keep system audio
+ * and the microphone apart) play only their first track in a <video>, so the preview, waveform and transcript
+ * would miss the voice. This rewrites them with one mixed audio track; video packets are copied as they are.
+ * `sink` ({ open() -> WritableStream, read(type) -> File }) streams the result to disk (OPFS); opened only when
+ * there is something to mix. Without one it's built in memory.
+ * Resolves the new File/Blob, or null when there's nothing to mix or this browser can't (keep the original).
+ */
+export async function mixAudioTracks(blob, { sink = null, onProgress = () => {} } = {}) {
+  if (FORCE_COMPAT) return null;
+  const input = openInput(blob);
+  const feeds = [];
+  try {
+    const enabled = (await input.getAudioTracks()).filter((t) => t.disposition?.default !== false);
+    if (enabled.length < 2) return null;
+    const audios = [];
+    for (const t of enabled) if (await t.canDecode()) audios.push(t);
+    if (audios.length < 2) return null;
+    if (!sink && blob.size > 1.5e9) { console.warn('Too large to mix audio tracks in memory; keeping the first track'); return null; }
+    // The longest track carries the timeline; the others are added to it.
+    const durs = await Promise.all(audios.map((t) => t.computeDuration().catch(() => 0)));
+    const main = audios[durs.indexOf(Math.max(...durs))];
+    for (const t of audios) if (t !== main) feeds.push(trackFeed(t));
+    const video = await input.getPrimaryVideoTrack();
+    const webm = (await input.getMimeType().catch(() => '')).includes('webm');
+    const codec = webm ? 'opus' : (await MB.canEncodeAudio('aac')) ? 'aac' : 'opus';
+    const target = sink ? new MB.StreamTarget(await sink.open(), { chunked: true }) : new MB.BufferTarget();
+    const output = new MB.Output({ format: webm ? new MB.WebMOutputFormat() : new MB.Mp4OutputFormat(), target });
+    const conv = await MB.Conversion.init({
+      input, output,
+      video: (t) => (video && t.id === video.id ? {} : { discard: true }),
+      audio: (t) => (t.id !== main.id ? { discard: true } : {
+        codec, bitrate: MB.QUALITY_HIGH, forceTranscode: true,
+        process: async (s) => {
+          const c = planesOf(s);
+          const end = c.t + c.n / c.rate;
+          for (const f of feeds) { await f.upTo(end); f.q.dropBefore(c.t); f.q.addInto(c.planes, c.t, c.rate); }
+          clampPlanes(c.planes);
+          return new MB.AudioSample({ data: packPlanar(c.planes), format: 'f32-planar', numberOfChannels: c.planes.length, sampleRate: c.rate, timestamp: c.t });
+        },
+      }),
+    });
+    if (!conv.isValid) return null;
+    conv.onProgress = onProgress;
+    await conv.execute();
+    const type = webm ? 'video/webm' : 'video/mp4';
+    return sink ? await sink.read(type) : new Blob([target.buffer], { type });
+  } catch (err) {
+    console.warn('Could not mix the audio tracks; keeping the first one', err);
+    return null;
+  } finally {
+    for (const f of feeds) f.close();
     input.dispose?.();
   }
 }

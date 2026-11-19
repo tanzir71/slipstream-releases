@@ -10,7 +10,8 @@ import { exportBundle, readBundle, matchesRef, isBundleFile, BundleError } from 
 import { downloadBlob } from './exporter.js';
 import { fromV2 } from '../../packages/editor-core/src/plan.js';
 import { showHostRoom, showGuestRoom, showReceive, sendToDeviceDialog } from './guest.js';
-import { probe, thumbnail } from './media.js';
+import { probe, thumbnail, mixAudioTracks } from './media.js';
+import { positionalWriter, readFile, opfsSupported } from './opfs.js';
 import { defaultEdit, uid } from './edl.js';
 import { openEditor } from './editor.js';
 import { recordingSupported, listDevices, openCamera, openMic, meter, Session, pickDisplay, alignCursor } from './recorder.js';
@@ -18,6 +19,7 @@ import { compactCursorSamples } from './autozoom.js';
 import { webcodecsVideo, webcodecsAudio } from './media-compat.js';
 import { realtimeSupported } from './exporter-realtime.js';
 import desktop from './desktop-bridge.js';
+import { desktopPreview, keepOriginal, originalRecord } from './preview-copy.js';
 
 const root = $('#app');
 let current = null; // active screen controller with optional cleanup()
@@ -56,7 +58,8 @@ window.addEventListener('hashchange', route);
 async function showHome() {
   const caps = capabilities();
   const fileInput = h('input', { type: 'file', accept: 'video/*,audio/*,.mkv,.mov,.m4a,.mp3,.wav,.slipstream', hidden: true, onchange: (e) => e.target.files[0] && importFile(e.target.files[0]) });
-  const drop = h('button.start-card.drop', { onclick: () => fileInput.click() },
+  // The desktop app's own dialog gives the file's path, so a Slipstream 1 recording's cursor track comes along.
+  const drop = h('button.start-card.drop', { onclick: () => (desktop.available ? pickAndImport() : fileInput.click()) },
     h('span.sc-icon.blue', icon('upload', 22)),
     h('span.sc-text', h('b', 'Import a video'), h('span', 'Drop a file here, or browse. MP4, MOV, WebM, MKV, audio files and .slipstream projects work.')),
     h('span.sc-kbd', 'Drop anywhere'));
@@ -189,17 +192,43 @@ async function openBundleFile(file, { verify = true } = {}) {
       if (ref.role === 'camera') camera = picked; else screen = picked;
     }
     if (!screen) throw new Error('This project has no screen recording.');
-    const p = await createProject({ name: b.name, screen, camera, cameraOffset: b.cameraOffset, edit: b.edit, cursor: takeCursorSamples(b.edit) });
+    // Desktop app: recordings this webview can't decode (HEVC/ProRes from a Mac, …) get preview copies.
+    busy.hidden = true;
+    const ps = await desktopPreview(screen, null, 'recording');
+    const pc = ps && camera ? await desktopPreview(camera, null, 'camera recording') : null;
+    const anglePreviews = {};
+    for (const [key, blob] of Object.entries(b.assets || {})) {
+      if (!ps || (camera && !pc) || !key.startsWith('angle-')) continue;
+      const pa = await desktopPreview(blob, null, 'camera angle');
+      if (!pa) return; // cancelled
+      if (pa.original) anglePreviews[key] = pa;
+    }
+    busy.hidden = false;
+    if (!ps || (camera && !pc)) return;
+    const p = await createProject({ name: b.name, screen: ps.preview, camera: pc?.preview || null, cameraOffset: b.cameraOffset, edit: b.edit, cursor: takeCursorSamples(b.edit) });
+    if (ps.original) await keepOriginal(p, ps.original, 'screen');
+    if (pc?.original) await keepOriginal(p, pc.original, 'camera');
     // Extra assets travel with the bundle: camera angles, B-roll and the logo.
     let changed = false;
+    const angleOriginals = {};
     for (const [key, blob] of Object.entries(b.assets || {})) {
+      const pa = anglePreviews[key];
+      if (pa) {
+        // An angle with a preview copy: the copy plays in the editor, the original is what exports and bundles use.
+        await putMedia(`${p.id}:${key}-original`, blob);
+        await putMedia(`${p.id}:${key}`, pa.preview);
+        angleOriginals[key.slice('angle-'.length)] = originalRecord(pa.original);
+        continue;
+      }
       await putMedia(`${p.id}:${key}`, blob);
       if (key === 'logo') { p.media.logo = true; p.media.logoType = blob.type; changed = true; }
       if (key === 'intro' || key === 'outro') { p.media[key] = true; p.media[`${key}Type`] = blob.type; changed = true; }
       if (key === 'music' && p.edit.music) { p.edit.music.type = blob.type || p.edit.music.type; changed = true; }
     }
     if (b.angles?.length) {
-      p.media.angles = b.angles.filter((a) => a.id === 'camera' || b.assets?.[`angle-${a.id}`]).map((a) => ({ ...a, type: b.assets?.[`angle-${a.id}`]?.type || a.type }));
+      p.media.angles = b.angles.filter((a) => a.id === 'camera' || b.assets?.[`angle-${a.id}`]).map((a) => angleOriginals[a.id]
+        ? { ...a, type: 'video/mp4', original: angleOriginals[a.id] }
+        : { ...a, type: b.assets?.[`angle-${a.id}`]?.type || a.type });
       changed = true;
     }
     for (const it of p.edit.broll || []) if (b.assets?.[`broll-${it.id}`]) it.type = b.assets[`broll-${it.id}`].type;
@@ -241,7 +270,24 @@ function pickForRef(ref) {
   });
 }
 
-async function createProject({ id = uid('p'), name, screen, camera = null, cameraOffset = 0, stored = false, edit: givenEdit = null, cursor = null }) {
+/**
+ * Mix a file's audio tracks into one when it has several (see mixAudioTracks), streaming the result to the
+ * project's OPFS folder as `screen` when OPFS is available. Returns { screen, written } (written: already stored).
+ */
+async function mixedScreen(id, screen, onProgress) {
+  const opfs = await opfsSupported();
+  let ws = null;
+  const sink = opfs ? { open: async () => (ws = await positionalWriter(['projects', id], 'screen')), read: (type) => readFile(['projects', id], 'screen', type) } : null;
+  const mixed = await mixAudioTracks(screen, { sink, onProgress });
+  if (!mixed) { await ws?.release(); return { screen, written: false }; }
+  // Keep the name the user knows (OPFS files are just called "screen").
+  const named = mixed instanceof File && mixed.name === (screen.name || mixed.name) ? mixed : new File([mixed], screen.name || 'screen.mp4', { type: mixed.type });
+  return { screen: named, written: opfs };
+}
+
+async function createProject({ id = uid('p'), name, screen, camera = null, cameraOffset = 0, stored = false, edit: givenEdit = null, cursor = null, onProgress = () => {} }) {
+  let screenWritten = false;
+  if (!stored) ({ screen, written: screenWritten } = await mixedScreen(id, screen, onProgress));
   const info = await probe(screen);
   if (!info.duration || !Number.isFinite(info.duration)) throw new Error('Could not read the duration of this file.');
   if (info.hasVideo && !info.canDecodeVideo && !info.canPlayElement) throw new Error(`This browser can’t decode ${info.videoCodec || 'this video codec'}. Try Chrome or Edge, or convert to MP4 (H.264).`);
@@ -265,7 +311,7 @@ async function createProject({ id = uid('p'), name, screen, camera = null, camer
     autoPolish: !givenEdit,
   };
   if (!stored) {
-    await putMedia(`${id}:screen`, screen);
+    if (!screenWritten) await putMedia(`${id}:screen`, screen);
     if (camera) await putMedia(`${id}:camera`, camera);
   }
   await saveProject(project);
@@ -273,18 +319,46 @@ async function createProject({ id = uid('p'), name, screen, camera = null, camer
   return project;
 }
 
-async function importFile(file) {
+/** Desktop app: import through the native open dialog (keeps the path). */
+async function pickAndImport() {
+  const info = await desktop.pickFile({ filters: [{ name: 'Video, audio or Slipstream project', extensions: ['mp4', 'mov', 'm4v', 'webm', 'mkv', 'avi', 'm4a', 'mp3', 'wav', 'slipstream'] }], title: 'Import a video' }).catch((err) => { toast(err.message, 'error'); return null; });
+  if (!info) return;
+  try {
+    await importFile(await desktop.readFile(info), { path: info.path });
+  } catch (err) {
+    toast(`Couldn’t open ${info.name || 'that file'}: ${err.message}`, 'error', 7000);
+  }
+}
+
+/** opts.path: where the file is on disk (desktop app: opened with the app or picked), for its v1 cursor track. */
+async function importFile(file, { path = null } = {}) {
   if (isBundleFile(file)) return openBundleFile(file);
+  let prepared;
+  try {
+    prepared = await desktopPreview(file, path, 'recording');
+  } catch (err) {
+    toast(`Couldn’t make a preview copy of ${file.name}: ${err.message}`, 'error', 8000);
+    return;
+  }
+  if (!prepared) return; // cancelled
   const busy = h('div.busy-overlay', h('div.busy-card', h('div.spinner'), h('p', `Opening ${file.name}…`)));
   document.body.append(busy);
   try {
-    const p = await createProject({ name: file.name.replace(/\.[^.]+$/, ''), screen: file });
+    const cursor = desktop.available && path ? await v1CursorTrack(path) : null;
+    const p = await createProject({ name: file.name.replace(/\.[^.]+$/, ''), screen: prepared.preview, cursor });
+    if (prepared.original) await keepOriginal(p, prepared.original, 'screen');
     location.hash = `#/edit/${encodeURIComponent(p.id)}`;
   } catch (err) {
     toast(err.message, 'error', 6000);
   } finally {
     busy.remove();
   }
+}
+
+/** A Slipstream 1 Windows recording's pointer track (`<video>.cursor.json` beside it), as project cursor samples. */
+async function v1CursorTrack(path) {
+  const r = await desktop.cursorSidecar(path).catch(() => null);
+  return r?.found && r.samples?.length ? { samples: r.samples, source: r.source || 'v1-sidecar' } : null;
 }
 
 // ---- Editor -----------------------------------------------------------------------------------
@@ -620,7 +694,7 @@ async function openDesktopFiles(list) {
     const ext = String(info.name || info.path).split('.').pop().toLowerCase();
     try {
       if (ext === 'slipproj' || ext === 'reelproj') await openLegacyProject(info);
-      else await importFile(await desktop.readFile(info));
+      else await importFile(await desktop.readFile(info), { path: info.path });
     } catch (err) {
       toast(`Couldn’t open ${info.name || 'that file'}: ${err.message}`, 'error', 7000);
     }
@@ -639,10 +713,18 @@ async function openLegacyProject(target) {
     const screenInfo = find('screen') || res.media[0];
     if (!screenInfo) throw new Error(`its recording wasn’t found${res.missing?.length ? ` (${res.missing.map(base).join(', ')})` : ''}`);
     const cameraInfo = find('camera');
-    const [screen, camera] = await Promise.all([desktop.readFile(screenInfo), cameraInfo && cameraInfo !== screenInfo ? desktop.readFile(cameraInfo) : null]);
+    const [original, camera] = await Promise.all([desktop.readFile(screenInfo), cameraInfo && cameraInfo !== screenInfo ? desktop.readFile(cameraInfo) : null]);
+    busy.hidden = true;
+    const prepared = await desktopPreview(original, screenInfo.path, 'recording');
+    const cam = prepared && camera ? await desktopPreview(camera, cameraInfo.path, 'camera recording') : null;
+    busy.hidden = false;
+    if (!prepared || (camera && !cam)) return;
     const { edit, media } = fromV2(res.plan);
     const name = res.plan?.meta?.title || base(target?.path || target).replace(/\.[^.]+$/, '') || 'Slipstream 1 project';
-    const p = await createProject({ name, screen, camera, cameraOffset: media.cameraOffset || 0, edit });
+    const cursor = takeCursorSamples(edit) || (await v1CursorTrack(screenInfo.path));
+    const p = await createProject({ name, screen: prepared.preview, camera: cam?.preview || null, cameraOffset: media.cameraOffset || 0, edit, cursor });
+    if (prepared.original) await keepOriginal(p, prepared.original, 'screen');
+    if (cam?.original) await keepOriginal(p, cam.original, 'camera');
     if (res.missing?.length) toast(`Opened without ${res.missing.map(base).join(', ')} (not found)`, 'info', 7000);
     location.hash = `#/edit/${encodeURIComponent(p.id)}`;
   } finally {

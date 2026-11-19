@@ -220,6 +220,12 @@ const api = {
     if (!info) return null;
     return invoke('engine_migrate_project', { jobId: newId('migrate'), path: typeof info === 'string' ? info : info.path });
   },
+  /**
+   * A Slipstream 1 Windows recording's pointer track (`<video without .mp4>.cursor.json` next to it), for zooms
+   * that follow the cursor. path: the video's path (opened or picked). Resolves
+   * { found, samples: [{ t, x, y }] (0..1 of the video), source: 'v1-sidecar' } — found: false when there is none.
+   */
+  cursorSidecar: (path) => invoke('engine_cursor_sidecar', { video: typeof path === 'string' ? path : path?.path }),
   readFile,
   saveFile,
   writeFile,
@@ -301,6 +307,16 @@ const api = {
     if (!output) return null;
     if (opts.media?.screen) p.sources = { ...(p.sources || {}), screen: { ...(p.sources?.screen || {}), path: await stageMedia(opts.media.screen, { key: `${opts.projectId || 'project'}-screen` }) } };
     return job('engine_nle_export', { plan: p, format, output }, { onProgress, signal: opts.signal });
+  },
+  /**
+   * Preview copy of a video this webview can't decode (HEVC without the Windows extension, ProRes, 10-bit, AVI…):
+   * at most 1280 px wide, H.264 + AAC with every audio track mixed in, cached by path, size and date. Only for the
+   * preview — exports read the original through the engine. input: path or Blob (staged first; opts.key reuses
+   * the copy). Resolves { path, size, engine: { cached, compat } }; read it with readFile().
+   */
+  async proxy(input, opts = {}, onProgress) {
+    const path = await stageMedia(input, { key: opts.key, onProgress, signal: opts.signal });
+    return job('engine_proxy', { input: path }, { onProgress, signal: opts.signal });
   },
   /** Every engine job's events in the Slipstream 1 shape: cb({ job_id, type: 'progress'|'log'|'result'|'error'|'cancelled', stage, pct, message, data }). */
   onJobEvent: (cb) => on('job_event', cb),

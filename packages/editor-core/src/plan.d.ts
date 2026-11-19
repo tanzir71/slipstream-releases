@@ -421,7 +421,7 @@ export interface WebMedia {
   [k: string]: unknown;
 }
 
-export type PlanShape = 'v2' | 'web-project' | 'web-edit' | 'engine-v1' | 'swift-v1' | 'unknown';
+export type PlanShape = 'v2' | 'web-project' | 'web-edit' | 'reelproj' | 'macos-v1' | 'macos-v1-plan' | 'engine-v1' | 'swift-v1' | 'unknown';
 /** slipstream_engine EditPlan v1 (docs/ARCHITECTURE.md §1.2); field names are reverse-engineered. */
 export type EngineEditPlanV1 = Record<string, unknown>;
 
@@ -432,7 +432,14 @@ export declare const fromWebV1: typeof toV2;
 export declare function fromV2(plan: EditPlanV2): { edit: WebEdit; media: WebMedia; meta: PlanMeta };
 export declare function fromEngineV1(plan: EngineEditPlanV1, opts?: { reference?: number }): EditPlanV2;
 export declare function toEngine(plan: EditPlanV2, opts?: { units?: 'fraction' | 'px'; reference?: number }): EngineEditPlanV1;
-export declare function fromSwiftV1(json: Record<string, unknown>, opts?: { reference?: number }): EditPlanV2;
+export declare function fromSwiftV1(json: Record<string, unknown>, opts?: { reference?: number; sequence?: number }): EditPlanV2;
+/** Slipstream 1.x for macOS project.json (or one of its sequences) -> v2; opts.sequence picks the sequence. */
+export declare function fromMacOSV1(json: Record<string, unknown>, opts?: { sequence?: number }): EditPlanV2;
+export declare function macOSV1Sequences(json: unknown): { index: number; id?: string; name: string }[];
+/** ReelMaker prototype .reelproj -> v2. */
+export declare function fromReelproj(json: Record<string, unknown>): EditPlanV2;
+export declare function reelSilenceKey(range: [number, number]): string;
+export declare function inlineCursorSamples(path: { t: number; x: number; y: number }[], clicks?: { t: number; x: number; y: number }[], opts?: { rate?: number; minMove?: number }): { t: number; x: number; y: number; click?: boolean }[];
 export declare function detectPlanShape(json: unknown): PlanShape;
-export declare function migratePlan(json: unknown): EditPlanV2;
+export declare function migratePlan(json: unknown, opts?: { sequence?: number }): EditPlanV2;
 export declare function validatePlan(plan: unknown): ValidationResult;

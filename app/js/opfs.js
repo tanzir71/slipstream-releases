@@ -108,6 +108,8 @@ export async function positionalWriter(path, name) {
     async close() { await call('close', { id }); },
     async abort() { await call('close', { id }).catch(() => {}); },
   });
+  // Closes the file even when the stream is locked by a writer that failed (OPFS handles are exclusive).
+  stream.release = () => call('close', { id }).catch(() => {});
   return stream;
 }
 

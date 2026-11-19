@@ -77,11 +77,18 @@ export async function getMedia(key, type = '') {
   return tx('media', 'readonly', (s) => s.get(key));
 }
 
-const MEDIA_NAMES = ['screen', 'camera', 'logo'];
+/**
+ * Media a project can hold under `${id}:<name>`: the recordings, the originals kept beside preview copies in the
+ * desktop app (`original` for the screen, `camera-original`, `angle-<id>-original`), camera angles
+ * (`angle-<id>`), B-roll (`broll-<id>`), the logo, music and intro/outro. The IndexedDB fallback matches every key
+ * that starts with `${id}:` (keyRange), so names added later are deleted and counted too.
+ */
+export const MEDIA_NAMES = ['screen', 'camera', 'original', 'camera-original', 'logo', 'music', 'intro', 'outro'];
+const projectKeys = (id) => IDBKeyRange.bound(`${id}:`, `${id}:\uffff`);
 
 export async function deleteProject(id) {
   await tx('projects', 'readwrite', (s) => s.delete(id));
-  await tx('media', 'readwrite', (s) => { for (const n of MEDIA_NAMES) s.delete(`${id}:${n}`); });
+  await tx('media', 'readwrite', (s) => s.delete(projectKeys(id)));
   if (await opfsSupported()) await removePath(['projects', id]).catch(() => {});
 }
 
@@ -89,10 +96,8 @@ export async function deleteProject(id) {
 export async function projectSize(id) {
   let total = 0;
   if (await opfsSupported()) total += await dirSize(['projects', id]);
-  for (const n of MEDIA_NAMES) {
-    const b = await tx('media', 'readonly', (s) => s.get(`${id}:${n}`)).catch(() => null);
-    total += b?.size || 0;
-  }
+  const blobs = await tx('media', 'readonly', (s) => s.getAll(projectKeys(id))).catch(() => []);
+  for (const b of blobs || []) total += b?.size || 0;
   return total;
 }
 
