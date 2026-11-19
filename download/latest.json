@@ -1,10 +1,10 @@
 {
-  "version": "2.1.0",
+  "version": "2.1.1",
   "published": true,
-  "notes": "Slipstream 2.1.0: a minimal recorder (display, window, area or camera, with a small pill), background or full frame, projects made of several clips, Auto edit that cuts to the motion or the beat, and Slipstream for Chrome, which shares links from your own bucket.",
-  "pub_date": "2026-11-19T20:03:59Z",
+  "notes": "Slipstream 2.1.1: fixes a Mac crash when the camera is allowed, keeps the recording pill and the post-stop card on screen, makes permission prompts appear, and tidies the recorder sheet.",
+  "pub_date": "2026-11-19T21:48:41Z",
   "repo": "tanzir71/slipstream-releases",
-  "tag": "v2.1.0",
+  "tag": "v2.1.1",
   "assets": {
     "windows": [
       {
@@ -12,7 +12,7 @@
         "kind": "exe",
         "size": 15511623,
         "sha256": "48f7ba61a1843a65bf034e8fcc653ec045194e07d56bd1efedca32effd5c8c38",
-        "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.1.0/slipstream-windows-x64-setup.exe",
+        "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.1.1/slipstream-windows-x64-setup.exe",
         "fallback": "download/slipstream-windows-x64-setup.exe"
       },
       {
@@ -20,7 +20,7 @@
         "kind": "msi",
         "size": 18026496,
         "sha256": "78ebba4e135489640d97a69024f956e1f488ada37b6ead4aeb27c2ea25d2393f",
-        "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.1.0/slipstream-windows-x64.msi",
+        "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.1.1/slipstream-windows-x64.msi",
         "fallback": "download/slipstream-windows-x64.msi"
       }
     ],
@@ -28,17 +28,17 @@
       {
         "name": "slipstream-macos.dmg",
         "kind": "dmg",
-        "size": 8986231,
-        "sha256": "3a5591b097c1b99efb129cd00b15fe9a3d451bae9a7c41135976d7dd7edc95b6",
-        "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.1.0/slipstream-macos.dmg",
+        "size": 9079223,
+        "sha256": "d0f9edfae73907075924b2bf995099b4948a0587b89dbabf2c49992b7e8c4236",
+        "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.1.1/slipstream-macos.dmg",
         "fallback": "download/slipstream-macos.dmg"
       },
       {
         "name": "slipstream-macos.zip",
         "kind": "zip",
-        "size": 7912611,
-        "sha256": "78fd7ef8ed263bbd56ef42672d6fd3c18161893a23af003d2b157762397eafa1",
-        "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.1.0/slipstream-macos.zip",
+        "size": 8025103,
+        "sha256": "de4d6d27802a92b1aebc2ea6901d3499dfc40406ed8d4316e10fc1ca1659f6c4",
+        "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.1.1/slipstream-macos.zip",
         "fallback": "download/slipstream-macos.zip"
       }
     ],
@@ -48,7 +48,7 @@
         "kind": "appimage",
         "size": 164063736,
         "sha256": "92655f562e6342b80bfd98508e0c33cc208b5f16d0100e5c6ec9968edf5439ce",
-        "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.1.0/slipstream-linux-x64.AppImage",
+        "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.1.1/slipstream-linux-x64.AppImage",
         "fallback": "download/slipstream-linux-x64.AppImage"
       },
       {
@@ -56,7 +56,7 @@
         "kind": "deb",
         "size": 18071438,
         "sha256": "2af152912e90e57f643545f8ff43801cdcbac0f12960d1312ac1ae73cd36e602",
-        "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.1.0/slipstream-linux-x64.deb",
+        "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.1.1/slipstream-linux-x64.deb",
         "fallback": "download/slipstream-linux-x64.deb"
       }
     ],
@@ -66,26 +66,26 @@
         "kind": "zip",
         "size": 106661181,
         "sha256": "20b3647e89a249921e8dc14768772370180b0d9eabf7ea567c87017cd2810e78",
-        "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.1.0/slipstream-for-chrome.zip",
+        "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.1.1/slipstream-for-chrome.zip",
         "fallback": "download/slipstream-for-chrome.zip"
       }
     ]
   },
   "platforms": {
     "windows-x86_64": {
-      "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.1.0/slipstream-windows-x64-setup.exe",
+      "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.1.1/slipstream-windows-x64-setup.exe",
       "signature": ""
     },
     "darwin-aarch64": {
-      "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.1.0/slipstream-macos.zip",
+      "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.1.1/slipstream-macos.zip",
       "signature": ""
     },
     "darwin-x86_64": {
-      "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.1.0/slipstream-macos.zip",
+      "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.1.1/slipstream-macos.zip",
       "signature": ""
     },
     "linux-x86_64": {
-      "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.1.0/slipstream-linux-x64.AppImage",
+      "url": "https://github.com/tanzir71/slipstream-releases/releases/download/v2.1.1/slipstream-linux-x64.AppImage",
       "signature": ""
     }
   }
