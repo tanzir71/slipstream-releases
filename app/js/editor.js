@@ -1,7 +1,7 @@
 // Slipstream Web editor: transcript editing, preview, timeline, inspector, export.
 import { h, $, $$, icon, fmtTime, fmtBytes, toast, modal, segmented, slider, toggle, debounce, fill } from './ui.js';
 import {
-  computeCuts, keptRanges, totalDuration, srcToOut, cutAt, markFillers, detectWordSilences, detectPeakSilences,
+  computeCuts, keptRanges, totalDuration, srcToOut, cutAt, markFillers, detectWordSilences, autoPauseCuts, detectPeakSilences,
   wordIndexAt, uid, ASPECTS, outputSize, mergeRanges, findRange,
 } from './edl.js';
 import { detectRetakes, applyRetakes } from '../../packages/editor-core/src/edl.js';
@@ -1360,7 +1360,7 @@ export async function openEditor(root, project, media, { onExit }) {
       commit((ed) => {
         ed.words = markFillers(words);
         for (const w of ed.words) if (w.filler === 'hard' && !w.deleted) { w.deleted = true; nf++; }
-        const sil = pausesIn(ed.words, ed.segments);
+        const sil = autoPauseCuts(pausesIn(ed.words, ed.segments), S.duration);
         ed.cuts = ed.cuts.filter((c) => c.kind !== 'silence');
         for (const r of sil) ed.cuts.push({ id: uid('c'), ...r });
         np = sil.length; saved = totalDuration(sil);

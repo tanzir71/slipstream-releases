@@ -55,13 +55,17 @@ self.onmessage = async (e) => {
       const slice = pcm.subarray(Math.floor(a * 16000), Math.floor(b * 16000));
       const res = await asr(slice, opts);
       const words = [];
+      // Whisper pads short audio to 30 s and sometimes writes text into the padding ("Thank you." at 18 s of a 4 s
+      // take): drop words that start after the audio ends, and keep the rest inside it.
+      const sliceEnd = a + slice.length / 16000;
       for (const c of res.chunks || []) {
         const text = String(c.text || '').trim();
         if (!text) continue;
         const [ts, te] = c.timestamp || [];
         const start = a + (Number.isFinite(ts) ? ts : 0);
+        if (start >= sliceEnd) continue;
         const end = a + (Number.isFinite(te) ? te : (Number.isFinite(ts) ? ts + 0.3 : 0.3));
-        words.push({ text, start, end: Math.max(end, start + 0.05) });
+        words.push({ text, start, end: Math.min(sliceEnd, Math.max(end, start + 0.05)) });
       }
       self.postMessage({ type: 'segment', index: s, total: segments.length, words });
     }

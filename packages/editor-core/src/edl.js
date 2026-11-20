@@ -25,6 +25,21 @@ export function isHardFiller(text) {
   return HARD_FILLERS.has(normalizeWord(text));
 }
 
+// What Whisper writes over silence or music: on a take with no talking these are the whole transcript.
+const WHISPER_SILENCE_PHRASES = new Set(['you', 'thank you', 'thank you so much', 'thank you very much', 'thanks', 'thanks for watching', 'thank you for watching', 'thanks for watching everyone', 'bye', 'bye bye']);
+
+/**
+ * True when a transcript is nothing but phrases Whisper invents over silence ("Thank you.", "Thanks for watching!",
+ * "you"), possibly repeated. Such a transcript is dropped, so a take with no talking gets no captions, no title from
+ * it and no pause cuts.
+ */
+export function isWhisperSilence(words) {
+  const live = (words || []).filter((w) => !w.deleted);
+  if (!live.length) return false;
+  const sentences = live.map((w) => w.text).join(' ').split(/[.!?…]+/).map((s) => s.toLowerCase().replace(/[^\p{L}\p{N}' ]+/gu, ' ').replace(/\s+/g, ' ').trim()).filter(Boolean);
+  return sentences.length > 0 && sentences.every((s) => WHISPER_SILENCE_PHRASES.has(s));
+}
+
 /** Returns a new words array with `filler: 'hard' | 'soft' | undefined` set on each word. */
 export function markFillers(words) {
   const out = words.map((w) => ({ ...w, filler: undefined }));
@@ -164,7 +179,10 @@ export function nextPlayable(kept, t) {
  * pause so that `keep` seconds remain (split evenly on both sides). Leading/trailing silence is included.
  */
 export function detectWordSilences(words, duration, { minGap = 0.75, keep = 0.25 } = {}) {
-  const live = words.filter((w) => !w.deleted);
+  // Words that start at or after the end of the media are ignored: on a short take Whisper writes text into the
+  // padding of its 30 s window (e.g. "Thank you." at 18 s of a 4 s take), which would cut the whole take as one
+  // leading pause.
+  const live = words.filter((w) => !w.deleted && !(duration > 0 && w.start >= duration));
   const out = [];
   const half = keep / 2;
   if (!live.length) return out;
@@ -176,6 +194,15 @@ export function detectWordSilences(words, duration, { minGap = 0.75, keep = 0.25
   const last = live[live.length - 1];
   if (duration - last.end > minGap) out.push({ start: last.end + half, end: duration, kind: 'silence' });
   return out.filter((r) => r.end - r.start >= MIN_RANGE);
+}
+
+/**
+ * Automatic polish tightens pauses only in a take that is mostly talk. When the pauses would remove more than
+ * `maxShare` of it (a demo with a few words of narration, or a few words Whisper invented over silence), it keeps
+ * them all; "Remove pauses" still cuts them when asked.
+ */
+export function autoPauseCuts(silences, duration, { maxShare = 0.5 } = {}) {
+  return duration > 0 && totalDuration(silences) > maxShare * duration ? [] : silences;
 }
 
 /**

@@ -1,6 +1,6 @@
 // Main-thread side of transcription: picks split points at quiet moments, runs the worker, streams words back.
 import { ASR_RATE } from './media.js';
-import { uid } from './edl.js';
+import { uid, isWhisperSilence } from './edl.js';
 
 export const MODELS = [
   { id: 'onnx-community/whisper-base_timestamped', label: 'Balanced', note: 'Whisper Base · ~80 MB · 99 languages', default: true },
@@ -52,7 +52,7 @@ export function transcribe(pcm, { model, language = 'auto', preferGPU = true, on
         const words = m.words.map((w) => ({ id: uid('w'), ...w }));
         all.push(...words);
         onWords?.(words, m.index + 1, m.total);
-      } else if (m.type === 'done') { worker.terminate(); resolve(all); }
+      } else if (m.type === 'done') { worker.terminate(); resolve(isWhisperSilence(all) ? [] : all); }
       else if (m.type === 'error') { worker.terminate(); reject(new Error(m.message)); }
     };
     worker.onerror = (e) => { worker.terminate(); reject(new Error(e.message || 'Transcription worker failed to start')); };
